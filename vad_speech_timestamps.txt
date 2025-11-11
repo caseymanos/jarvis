@@ -1,0 +1,26 @@
+# VAD Speech Detection Timestamps
+# Extracted from logcat for trace captured around 23:31
+
+# Format: Date Time.Milliseconds - Event
+11-10 23:31:01.838 - Speech Detected
+11-10 23:31:04.077 - Speech Detected  
+11-10 23:31:08.236 - Speech Detected
+11-10 23:31:10.697 - Speech Detected
+11-10 23:31:12.137 - Speech Detected
+11-10 23:31:17.517 - Speech Detected
+11-10 23:31:23.076 - Speech Detected
+11-10 23:31:27.675 - Speech Detected
+11-10 23:31:28.297 - Speech Detected
+11-10 23:31:41.736 - Speech Detected
+11-10 23:31:44.517 - Speech Detected
+11-10 23:31:47.612 - Speech Detected
+11-10 23:31:52.397 - Speech Detected
+
+# Trace file time range (system uptime in seconds):
+# Start: ~6034 seconds
+# End: ~6064 seconds  
+# Duration: 30 seconds
+
+# Note: The Trace.beginSection() markers for "Heartbeat.VAD_SpeechDetected" 
+# are not appearing in the atrace output, even though app tracing is enabled.
+# This is a known limitation on Android 15 with atrace.

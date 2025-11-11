@@ -26,6 +26,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".EnrollmentActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+
         <service
             android:name=".HeartbeatService"
             android:enabled="true"

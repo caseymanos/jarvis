@@ -51,5 +51,7 @@ adb shell am profile start com.frontieraudio.heartbeat global
 
 Alternatively, use ONNX Runtime’s `ort_benchmark` (if flashed onto the device) to replay the Silero `.onnx` asset under the same CPU affinity and thread count. Target < 2% CPU combined for the service loop plus VAD inference.
 
+Use @benchmark_vad.sh to benchmark as well.
+
 Document each profiling run (date, device build, CPU %, memory MB, Historian observations) in `docs/FullAnalysis.md` to track regressions before Stage 2 integration.
 
