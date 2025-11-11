@@ -20,6 +20,16 @@ Testing / Profiling	Android Studio Profiler + Battery Historian + `adb shell dum
 
 ⚡ 5. Implementation Steps
 
+### Stage 1 Output Contract (new)
+
+- `HeartbeatService.speechSegments()` now exposes a `SharedFlow<SpeechSegment>` that Stage 2 can collect from inside the service.
+- Each `SpeechSegment` bundles:
+  - `samples`: mono PCM-16 buffer (16 kHz) covering the full voiced span.
+  - `startTimestampNs` / `endTimestampNs`: based on `SystemClock.elapsedRealtimeNanos()` for Perfetto alignment.
+  - ~240 ms of pre-roll silence and a minimum voiced duration of ~1.2 s to stabilize speaker verification input.
+- Segments are emitted on the service IO scope with backpressure: newest segments replace oldest if Stage 2 lags.
+- Perfetto traces log `Heartbeat.Stage1SegmentReady` markers so Stage 2 profiling can correlate verification workload to segment creation.
+
 Set up Foreground Service
 
 Acquire mic permission (RECORD_AUDIO), run as START_STICKY.

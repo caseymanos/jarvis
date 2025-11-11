@@ -2,19 +2,136 @@
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:padding="24dp">
 
     <TextView
         android:id="@+id/statusText"
-        android:layout_width="wrap_content"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_margin="24dp"
         android:text="@string/foreground_notification_text"
-        android:textAppearance="?attr/textAppearanceHeadlineSmall"
-        app:layout_constraintBottom_toBottomOf="parent"
+        android:textAppearance="?attr/textAppearanceBodyLarge"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+    <Button
+        android:id="@+id/openEnrollmentButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="@string/open_enrollment"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/statusText" />
 
+    <Button
+        android:id="@+id/clearEnrollmentButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/clear_enrollment"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/openEnrollmentButton" />
+
+    <TextView
+        android:id="@+id/verificationHeader"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="32dp"
+        android:text="@string/verification_settings_title"
+        android:textAppearance="?attr/textAppearanceTitleSmall"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/clearEnrollmentButton" />
+
+    <TextView
+        android:id="@+id/thresholdLabel"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="@string/threshold_label"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        app:layout_constraintEnd_toStartOf="@id/thresholdValue"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/verificationHeader" />
+
+    <TextView
+        android:id="@+id/thresholdValue"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:text="@string/threshold_value_placeholder"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        app:layout_constraintBaseline_toBaselineOf="@id/thresholdLabel"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <SeekBar
+        android:id="@+id/thresholdSeekBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/thresholdLabel" />
+
+    <TextView
+        android:id="@+id/retentionLabel"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="@string/retention_label"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        app:layout_constraintEnd_toStartOf="@id/retentionValue"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/thresholdSeekBar" />
+
+    <TextView
+        android:id="@+id/retentionValue"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:text="@string/duration_value_placeholder"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        app:layout_constraintBaseline_toBaselineOf="@id/retentionLabel"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <SeekBar
+        android:id="@+id/retentionSeekBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/retentionLabel" />
+
+    <TextView
+        android:id="@+id/cooldownLabel"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="@string/cooldown_label"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        app:layout_constraintEnd_toStartOf="@id/cooldownValue"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/retentionSeekBar" />
+
+    <TextView
+        android:id="@+id/cooldownValue"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:text="@string/duration_value_placeholder"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        app:layout_constraintBaseline_toBaselineOf="@id/cooldownLabel"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <SeekBar
+        android:id="@+id/cooldownSeekBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/cooldownLabel"
+        app:layout_constraintBottom_toBottomOf="parent" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
