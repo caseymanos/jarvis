@@ -36,6 +36,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 class EnrollmentActivity : AppCompatActivity() {
 
@@ -46,10 +47,13 @@ class EnrollmentActivity : AppCompatActivity() {
     private lateinit var primaryButton: Button
     private lateinit var cancelButton: Button
 
-    private val voiceProfileStore by lazy { VoiceProfileStore(applicationContext) }
+    private val voiceProfileStore by lazy { (application as HeartbeatApplication).voiceProfileStore }
 
     private var recordingJob: Job? = null
     private var samplesCaptured = 0
+    private var latestProgressPercent: Float = 0f
+    @Volatile
+    private var completionRequested = false
 
     private val audioPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -120,6 +124,8 @@ class EnrollmentActivity : AppCompatActivity() {
             return
         }
         samplesCaptured = 0
+        latestProgressPercent = 0f
+        completionRequested = false
         statusText.text = getString(R.string.enrollment_listening_status)
         setRecordingUi(true)
         updateProgress(0f)
@@ -130,8 +136,10 @@ class EnrollmentActivity : AppCompatActivity() {
                     .setAccessKey(accessKey)
                     .build(applicationContext)
             } catch (e: EagleException) {
+                val details = e.toDetailedString()
+                Log.e(TAG, "Eagle profiler initialization failed\n$details", e)
                 withContext(Dispatchers.Main) {
-                    statusText.text = getString(R.string.enrollment_profiler_error, e.message ?: "")
+                    statusText.text = getString(R.string.enrollment_profiler_error, details)
                     setRecordingUi(false)
                 }
                 return@launch
@@ -150,12 +158,21 @@ class EnrollmentActivity : AppCompatActivity() {
             ) { segment ->
                 try {
                     val result = profiler.enroll(segment.samples)
+                    
+                    // Always count samples - Eagle handles quality internally
                     samplesCaptured += segment.samples.size
+                    
+                    // Track quality for user feedback
+                    val isGoodQuality = result.feedback == EagleProfilerEnrollFeedback.AUDIO_OK
+                    if (!isGoodQuality) {
+                        Log.d(TAG, "Eagle feedback for segment: ${result.feedback} (percentage: ${result.percentage})")
+                    }
+                    
                     withContext(Dispatchers.Main) {
-                        handleEnrollProgress(result.percentage, result.feedback)
+                        handleEnrollProgress(result.percentage, result.feedback, isGoodQuality)
                     }
                 } catch (e: EagleException) {
-                    Log.w(TAG, "Enrollment frame rejected", e)
+                    Log.w(TAG, "Enrollment frame rejected\n${e.toDetailedString()}", e)
                     withContext(Dispatchers.Main) {
                         statusText.text = getString(R.string.enrollment_frame_error, e.message ?: "")
                     }
@@ -185,13 +202,17 @@ class EnrollmentActivity : AppCompatActivity() {
                         frameOffset = 0
                     }
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
             } catch (t: Throwable) {
-                withContext(Dispatchers.Main) {
-                    statusText.text = getString(R.string.enrollment_error_generic)
+                if (t is CancellationException) {
+                    Log.d(TAG, "Recording coroutine cancelled (normal for completion)")
+                } else {
+                    Log.e(TAG, "Recording error", t)
+                    withContext(Dispatchers.Main) {
+                        statusText.text = getString(R.string.enrollment_error_generic)
+                    }
                 }
             } finally {
+                Log.d(TAG, "Finally block started - cleaning up resources")
                 try {
                     audioRecord.stop()
                 } catch (_: IllegalStateException) {
@@ -199,17 +220,27 @@ class EnrollmentActivity : AppCompatActivity() {
                 audioRecord.release()
                 vad.close()
                 assembler.reset()
+                Log.d(TAG, "Resources cleaned up, checking enrollment completion")
 
-                val progress = withContext(Dispatchers.Main) { progressBar.progress }
-                if (progress >= 100) {
+                val percentSnapshot = latestProgressPercent
+                Log.d(TAG, "Final enrollment percentage: $percentSnapshot%")
+                
+                if (percentSnapshot >= 99.5f) {
+                    Log.d(TAG, "Enrollment complete, starting export process")
+                    // Export on IO thread (this is blocking and can take time)
+                    // We're already on IO dispatcher, so just call it directly
                     val exportedProfile = exportProfile(profiler)
-                    withContext(Dispatchers.Main) {
+                    Log.d(TAG, "Export completed, finalizing enrollment")
+                    withContext(NonCancellable + Dispatchers.Main) {
                         finalizeEnrollment(exportedProfile)
                     }
                 } else {
-                    withContext(Dispatchers.Main) {
+                    Log.d(TAG, "Enrollment incomplete ($percentSnapshot%), not exporting")
+                    withContext(NonCancellable + Dispatchers.Main) {
                         statusText.text = getString(R.string.enrollment_incomplete)
                         setRecordingUi(false)
+                        primaryButton.isEnabled = true
+                        cancelButton.isEnabled = true
                     }
                     safeDeleteProfiler(profiler)
                 }
@@ -217,6 +248,7 @@ class EnrollmentActivity : AppCompatActivity() {
                 withContext(NonCancellable + Dispatchers.Main) {
                     recordingJob = null
                 }
+                Log.d(TAG, "Finally block completed")
             }
         }
     }
@@ -225,6 +257,8 @@ class EnrollmentActivity : AppCompatActivity() {
         if (profile == null) {
             statusText.text = getString(R.string.enrollment_error_generic)
             setRecordingUi(false)
+            primaryButton.isEnabled = true
+            cancelButton.isEnabled = true
             return
         }
         withContext(Dispatchers.IO) {
@@ -233,15 +267,30 @@ class EnrollmentActivity : AppCompatActivity() {
         statusText.text = getString(R.string.enrollment_complete)
         promptText.text = getString(R.string.enrollment_complete_prompt)
         updateProgress(100f)
-        primaryButton.text = getString(R.string.enrollment_restart)
         setRecordingUi(false)
+        primaryButton.text = getString(R.string.enrollment_restart)
+        primaryButton.isEnabled = true
+        
+        // Change Cancel button to "Done" that returns to MainActivity
+        cancelButton.text = getString(R.string.enrollment_done)
+        cancelButton.setOnClickListener {
+            finish()  // Return to MainActivity
+        }
+        cancelButton.isEnabled = true
     }
 
     private fun exportProfile(profiler: EagleProfiler): VoiceProfile? {
         return try {
+            Log.d(TAG, "Starting Eagle profile export (this may take 10-30 seconds)...")
+            val startTime = System.currentTimeMillis()
             val profile = profiler.export()
+            val exportDuration = System.currentTimeMillis() - startTime
+            Log.d(TAG, "Eagle profile export completed in ${exportDuration}ms")
+            
             val bytes = profile.bytes
+            Log.d(TAG, "Profile size: ${bytes.size} bytes")
             profile.delete()
+            
             VoiceProfile(
                 profileBytes = bytes,
                 createdAtMillis = System.currentTimeMillis(),
@@ -251,7 +300,7 @@ class EnrollmentActivity : AppCompatActivity() {
                 samplesCaptured = samplesCaptured
             )
         } catch (e: EagleException) {
-            Log.e(TAG, "Unable to export Eagle profile", e)
+            Log.e(TAG, "Unable to export Eagle profile\n${e.toDetailedString()}", e)
             null
         } finally {
             safeDeleteProfiler(profiler)
@@ -268,6 +317,8 @@ class EnrollmentActivity : AppCompatActivity() {
     private fun stopRecording() {
         recordingJob?.cancel()
         setRecordingUi(false)
+        primaryButton.isEnabled = true
+        cancelButton.isEnabled = true
     }
 
     private fun setRecordingUi(active: Boolean) {
@@ -279,8 +330,13 @@ class EnrollmentActivity : AppCompatActivity() {
         cancelButton.isEnabled = true
     }
 
-    private fun handleEnrollProgress(percentage: Float, feedback: EagleProfilerEnrollFeedback) {
+    private fun handleEnrollProgress(
+        percentage: Float, 
+        feedback: EagleProfilerEnrollFeedback,
+        wasAccepted: Boolean = true
+    ) {
         updateProgress(percentage)
+        
         val statusMessage = when (feedback) {
             EagleProfilerEnrollFeedback.AUDIO_OK -> getString(R.string.enrollment_feedback_audio_ok)
             EagleProfilerEnrollFeedback.AUDIO_TOO_SHORT -> getString(R.string.enrollment_feedback_too_short)
@@ -288,12 +344,27 @@ class EnrollmentActivity : AppCompatActivity() {
             EagleProfilerEnrollFeedback.NO_VOICE_FOUND -> getString(R.string.enrollment_feedback_no_voice)
             EagleProfilerEnrollFeedback.QUALITY_ISSUE -> getString(R.string.enrollment_feedback_quality_issue)
         }
-        statusText.text = getString(R.string.enrollment_progress_status, statusMessage, percentage.toInt())
+        
+        // Show warning indicator for poor quality
+        val prefix = if (wasAccepted) "" else "⚠️ "
+        statusText.text = getString(R.string.enrollment_progress_status, prefix + statusMessage, percentage.toInt())
+        
+        if (!completionRequested && percentage >= 99.5f) {
+            completionRequested = true
+            Log.d(TAG, "Enrollment reached 100%, stopping recording to begin export...")
+            // Show exporting message immediately so user sees feedback
+            statusText.text = getString(R.string.enrollment_processing)
+            primaryButton.isEnabled = false
+            cancelButton.isEnabled = false
+            recordingJob?.cancel()
+        }
     }
 
     private fun updateProgress(percentage: Float) {
-        progressBar.progress = percentage.toInt().coerceIn(0, 100)
-        progressText.text = getString(R.string.enrollment_progress_percent, percentage.toInt())
+        latestProgressPercent = percentage
+        val rounded = percentage.roundToInt().coerceIn(0, 100)
+        progressBar.progress = rounded
+        progressText.text = getString(R.string.enrollment_progress_percent, rounded)
     }
 
     private fun requireAccessKey(): String {
@@ -334,10 +405,20 @@ class EnrollmentActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "EnrollmentActivity"
-        private const val ENROLLMENT_MIN_SEGMENT_MS = 800
+        private const val ENROLLMENT_MIN_SEGMENT_MS = 900  // Balanced quality vs completion rate
         private const val ENROLLMENT_PREROLL_MS = 240
         private const val VAD_SPEECH_MS = 60
         private const val VAD_SILENCE_MS = 200
         private const val BYTES_PER_SAMPLE = 2
+    }
+
+    private fun EagleException.toDetailedString(): String {
+        val stack = messageStack
+        return buildString {
+            append(message ?: "Unknown error")
+            if (!stack.isNullOrEmpty()) {
+                stack.forEach { append("\n• ").append(it) }
+            }
+        }
     }
 }

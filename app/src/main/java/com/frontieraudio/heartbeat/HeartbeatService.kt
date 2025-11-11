@@ -43,14 +43,18 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.max
 import java.util.Locale
+import java.lang.ref.WeakReference
 
 class HeartbeatService : Service() {
 
     private val serviceScope = CoroutineScope(
-        SupervisorJob() + Dispatchers.IO.limitedParallelism(1)
+        SupervisorJob() + Dispatchers.IO
     )
     private var processingJob: Job? = null
     private var audioRecord: AudioRecord? = null
@@ -78,16 +82,18 @@ class HeartbeatService : Service() {
             Trace.endSection()
         }
     }
-    private val voiceProfileStore by lazy { VoiceProfileStore(applicationContext) }
+    private val voiceProfileStore by lazy { (application as HeartbeatApplication).voiceProfileStore }
     private val speakerVerifierLazy = lazy { SpeakerVerifier(applicationContext) }
     private val speakerVerifier: SpeakerVerifier
         get() = speakerVerifierLazy.value
-    private val configStore by lazy { SpeakerVerificationConfigStore(applicationContext) }
+    private val configStore by lazy { (application as HeartbeatApplication).configStore }
     private val verifiedSegmentsInternal = MutableSharedFlow<VerifiedSpeechSegment>(
         replay = 0,
         extraBufferCapacity = 4,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
+    private val notVerifiedState = VerificationState(isVerified = false, similarity = null, validUntilElapsedRealtimeMs = null)
+    private val verificationStateInternal = MutableStateFlow(notVerifiedState)
     private var verificationJob: Job? = null
     private var profileJob: Job? = null
     private var configJob: Job? = null
@@ -102,6 +108,7 @@ class HeartbeatService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instanceRef = WeakReference(this)
         createNotificationChannel()
         // Enable atrace for this app so Trace.beginSection() calls are captured
         enableAppTracing()
@@ -135,6 +142,8 @@ class HeartbeatService : Service() {
             speakerVerifier.close()
         }
         serviceScope.cancel()
+        instanceRef?.clear()
+        instanceRef = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -142,6 +151,8 @@ class HeartbeatService : Service() {
     fun speechSegments(): SharedFlow<SpeechSegment> = speechSegmentsInternal.asSharedFlow()
 
     fun verifiedSegments(): SharedFlow<VerifiedSpeechSegment> = verifiedSegmentsInternal.asSharedFlow()
+
+    fun verificationStateFlow(): StateFlow<VerificationState> = verificationStateInternal.asStateFlow()
 
     fun verificationState(): VerificationState {
         val now = SystemClock.elapsedRealtime()
@@ -159,17 +170,29 @@ class HeartbeatService : Service() {
     }
 
     private fun startVerificationPipeline() {
+        Log.d(TAG, "Starting verification pipeline")
         profileJob?.cancel()
         configJob?.cancel()
         verificationJob?.cancel()
+        verificationStateInternal.value = notVerifiedState
 
         profileJob = serviceScope.launch {
-            voiceProfileStore.voiceProfileFlow.collect { profile ->
-                currentProfile = profile
-                if (profile == null) {
-                    activeVerification = null
+            Log.d(TAG, "Profile collection job started, about to collect from voiceProfileStore")
+            try {
+                voiceProfileStore.voiceProfileFlow.collect { profile ->
+                    Log.d(TAG, "Profile collection: received emission on thread ${Thread.currentThread().name}")
+                    currentProfile = profile
+                    Log.d(TAG, "Profile updated: ${if (profile != null) "loaded (${profile.samplesCaptured} samples)" else "null"}")
+                    if (profile == null) {
+                        activeVerification = null
+                        verificationStateInternal.value = notVerifiedState
+                    }
+                    Log.d(TAG, "Profile collection: finished processing emission, waiting for next")
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Profile collection error", e)
             }
+            Log.d(TAG, "Profile collection job ended")
         }
 
         configJob = serviceScope.launch {
@@ -194,11 +217,14 @@ class HeartbeatService : Service() {
         configJob?.cancel()
         configJob = null
         activeVerification = null
+        verificationStateInternal.value = notVerifiedState
     }
 
     private suspend fun handleSegmentForVerification(segment: SpeechSegment) {
+        Log.d(TAG, "Stage2: processing segment ${segment.id}")
         val profile = currentProfile ?: run {
             Log.d(TAG, "Stage2: skipping segment ${segment.id} - no enrolled profile")
+            verificationStateInternal.value = notVerifiedState
             return
         }
         val config = currentConfig
@@ -218,6 +244,11 @@ class HeartbeatService : Service() {
                     scores = result.scores,
                     validUntilMs = validUntil
                 )
+                verificationStateInternal.value = VerificationState(
+                    isVerified = true,
+                    similarity = result.similarity,
+                    validUntilElapsedRealtimeMs = validUntil
+                )
                 emitVerifiedSegment(segment, result.similarity, result.scores)
                 Log.i(
                     TAG,
@@ -227,6 +258,7 @@ class HeartbeatService : Service() {
             is SpeakerVerificationResult.NoMatch -> {
                 activeVerification = null
                 lastRejectAtMs = nowMs
+                verificationStateInternal.value = notVerifiedState
                 Log.i(
                     TAG,
                     "Stage2 rejected segment id=${segment.id} similarity=${String.format(Locale.US, "%.3f", result.similarity)}"
@@ -235,11 +267,13 @@ class HeartbeatService : Service() {
             is SpeakerVerificationResult.NotEnrolled -> {
                 activeVerification = null
                 lastRejectAtMs = nowMs
+                verificationStateInternal.value = notVerifiedState
                 Log.w(TAG, "Stage2 reported not enrolled; dropping segment ${segment.id}")
             }
             is SpeakerVerificationResult.Error -> {
                 activeVerification = null
                 lastRejectAtMs = nowMs
+                verificationStateInternal.value = notVerifiedState
                 Log.e(TAG, "Stage2 error for segment ${segment.id}", result.throwable)
             }
         }
@@ -260,6 +294,7 @@ class HeartbeatService : Service() {
         val state = activeVerification
         if (state != null && nowMs > state.validUntilMs) {
             activeVerification = null
+            verificationStateInternal.value = notVerifiedState
         }
     }
 
@@ -475,9 +510,12 @@ class HeartbeatService : Service() {
         private const val SPEECH_DURATION_MS = 80
         private const val SILENCE_DURATION_MS = 300
         private const val PRE_ROLL_DURATION_MS = 240
-        private const val MIN_SEGMENT_DURATION_MS = 0
+        private const val MIN_SEGMENT_DURATION_MS = 900  // Match enrollment requirements for consistent quality
         private const val RESTART_BACKOFF_INITIAL_MS = 1_000L
         private const val RESTART_BACKOFF_MAX_MS = 8_000L
+
+        @Volatile
+        private var instanceRef: WeakReference<HeartbeatService>? = null
 
         fun start(context: Context) {
             val intent = Intent(context, HeartbeatService::class.java)
@@ -488,6 +526,8 @@ class HeartbeatService : Service() {
             val intent = Intent(context, HeartbeatService::class.java)
             context.stopService(intent)
         }
+
+        fun getInstance(): HeartbeatService? = instanceRef?.get()
     }
 
     private fun audioReadErrorName(code: Int): String = when (code) {

@@ -43,5 +43,11 @@
     <string name="profile_enrolled">Eagle profile ready for selective transcription.</string>
     <string name="profile_enrolled_details">Engine %1$s · %2$d samples captured</string>
     <string name="profile_not_enrolled">Stage 2 requires an Eagle profile. Enroll your voice to continue.</string>
+    <string name="verification_listening">Stage 2: Listening</string>
+    <string name="verification_active">Stage 2: Verified</string>
+    <string name="verification_similarity">Similarity: %1$.2f</string>
+    <string name="verification_countdown">Expires in: %1$.1f s</string>
+    <string name="verification_expired">Expired</string>
+    <string name="enrollment_done">Done</string>
 </resources>
 

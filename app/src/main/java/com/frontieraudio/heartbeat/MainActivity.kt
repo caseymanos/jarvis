@@ -5,18 +5,26 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.util.Log
 import android.widget.Button
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.cardview.widget.CardView
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.frontieraudio.heartbeat.speaker.SpeakerVerificationConfig
 import com.frontieraudio.heartbeat.speaker.SpeakerVerificationConfigStore
 import com.frontieraudio.heartbeat.speaker.VoiceProfileStore
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Job
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -31,9 +39,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var retentionValue: TextView
     private lateinit var cooldownSeekBar: SeekBar
     private lateinit var cooldownValue: TextView
+    private lateinit var verificationCard: CardView
+    private lateinit var verificationStatusText: TextView
+    private lateinit var verificationSimilarityText: TextView
+    private lateinit var verificationCountdownText: TextView
 
-    private val voiceProfileStore by lazy { VoiceProfileStore(applicationContext) }
-    private val configStore by lazy { SpeakerVerificationConfigStore(applicationContext) }
+    private val voiceProfileStore by lazy { (application as HeartbeatApplication).voiceProfileStore }
+    private val configStore by lazy { (application as HeartbeatApplication).configStore }
 
     private var baseStatusMessage: String = ""
     private var profileStatusMessage: String = ""
@@ -42,6 +54,8 @@ class MainActivity : AppCompatActivity() {
     private var updatingThresholdFromConfig = false
     private var updatingRetentionFromConfig = false
     private var updatingCooldownFromConfig = false
+    private var verificationStateJob: Job? = null
+    private var countdownJob: Job? = null
 
     private val recordAudioPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -68,6 +82,7 @@ class MainActivity : AppCompatActivity() {
         configureSeekBars()
         configureButtons()
         observeStores()
+        observeVerificationState()
         ensurePermissionThenStart()
     }
 
@@ -86,6 +101,11 @@ class MainActivity : AppCompatActivity() {
         retentionValue = findViewById(R.id.retentionValue)
         cooldownSeekBar = findViewById(R.id.cooldownSeekBar)
         cooldownValue = findViewById(R.id.cooldownValue)
+        verificationCard = findViewById(R.id.verificationCard)
+        verificationStatusText = findViewById(R.id.verificationStatusText)
+        verificationSimilarityText = findViewById(R.id.verificationSimilarityText)
+        verificationCountdownText = findViewById(R.id.verificationCountdownText)
+        updateVerificationIndicator(HeartbeatService.VerificationState(false, null, null))
     }
 
     private fun configureButtons() {
@@ -164,6 +184,7 @@ class MainActivity : AppCompatActivity() {
     private fun observeStores() {
         lifecycleScope.launch {
             voiceProfileStore.voiceProfileFlow.collectLatest { profile ->
+                Log.d("MainActivity", "Received profile emission: ${if (profile != null) "loaded (${profile.samplesCaptured} samples)" else "null"}")
                 profileStatusMessage = if (profile != null) {
                     val details = getString(
                         R.string.profile_enrolled_details,
@@ -199,6 +220,42 @@ class MainActivity : AppCompatActivity() {
                 cooldownSeekBar.progress = cooldownProgress
                 updateCooldownValue(config.negativeCooldownMillis)
                 updatingCooldownFromConfig = false
+            }
+        }
+    }
+
+    private fun observeVerificationState() {
+        verificationStateJob?.cancel()
+        verificationStateJob = lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                updateVerificationIndicator(HeartbeatService.VerificationState(false, null, null))
+                var activeService: HeartbeatService? = null
+                var collectionJob: Job? = null
+                try {
+                    while (isActive) {
+                        val service = HeartbeatService.getInstance()
+                        when {
+                            service != null && service !== activeService -> {
+                                collectionJob?.cancel()
+                                activeService = service
+                                collectionJob = launch {
+                                    service.verificationStateFlow().collectLatest { state ->
+                                        updateVerificationIndicator(state)
+                                    }
+                                }
+                            }
+                            service == null && activeService != null -> {
+                                collectionJob?.cancel()
+                                collectionJob = null
+                                activeService = null
+                                updateVerificationIndicator(HeartbeatService.VerificationState(false, null, null))
+                            }
+                        }
+                        delay(SERVICE_RETRY_DELAY_MS)
+                    }
+                } finally {
+                    collectionJob?.cancel()
+                }
             }
         }
     }
@@ -263,6 +320,66 @@ class MainActivity : AppCompatActivity() {
         cooldownValue.text = String.format(Locale.US, "%.1f s", millis / 1000f)
     }
 
+    private fun updateVerificationIndicator(state: HeartbeatService.VerificationState) {
+        val isVerified = state.isVerified
+        val backgroundColorRes = if (isVerified) {
+            R.color.verification_active
+        } else {
+            R.color.verification_inactive
+        }
+
+        verificationCard.setCardBackgroundColor(ContextCompat.getColor(this, backgroundColorRes))
+        verificationStatusText.text = getString(
+            if (isVerified) R.string.verification_active else R.string.verification_listening
+        )
+
+        val similarityValue = state.similarity ?: 0f
+        verificationSimilarityText.text = getString(R.string.verification_similarity, similarityValue)
+
+        if (isVerified && state.validUntilElapsedRealtimeMs != null) {
+            startCountdownTimer(state.validUntilElapsedRealtimeMs)
+        } else {
+            cancelCountdownTimer()
+        }
+    }
+
+    private fun startCountdownTimer(validUntilMs: Long) {
+        countdownJob?.cancel()
+        val job = lifecycleScope.launch {
+            while (isActive) {
+                val remainingMs = validUntilMs - SystemClock.elapsedRealtime()
+                if (remainingMs <= 0) {
+                    verificationCountdownText.text = getString(R.string.verification_expired)
+                    break
+                }
+                val remainingSeconds = remainingMs / 1000f
+                verificationCountdownText.text =
+                    getString(R.string.verification_countdown, remainingSeconds)
+                delay(COUNTDOWN_UPDATE_INTERVAL_MS)
+            }
+        }
+        job.invokeOnCompletion {
+            if (countdownJob === job) {
+                countdownJob = null
+            }
+        }
+        countdownJob = job
+    }
+
+    private fun cancelCountdownTimer() {
+        countdownJob?.cancel()
+        countdownJob = null
+        verificationCountdownText.text = ""  // Empty instead of "Expired"
+    }
+
+    override fun onDestroy() {
+        verificationStateJob?.cancel()
+        verificationStateJob = null
+        countdownJob?.cancel()
+        countdownJob = null
+        super.onDestroy()
+    }
+
     private fun thresholdProgressFor(value: Float): Int {
         val clamped = value.coerceIn(
             SpeakerVerificationConfig.MIN_THRESHOLD,
@@ -312,5 +429,8 @@ class MainActivity : AppCompatActivity() {
         private const val COOLDOWN_MIN_STEPS = 0
         private const val COOLDOWN_MAX_STEPS = 20 // 10 seconds
         private const val COOLDOWN_PROGRESS_MAX = COOLDOWN_MAX_STEPS
+
+        private const val COUNTDOWN_UPDATE_INTERVAL_MS = 100L
+        private const val SERVICE_RETRY_DELAY_MS = 500L
     }
 }

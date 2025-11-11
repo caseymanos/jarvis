@@ -7,5 +7,7 @@
     <color name="teal_700">#018786</color>
     <color name="black">#000000</color>
     <color name="white">#FFFFFF</color>
+    <color name="verification_active">#4CAF50</color>
+    <color name="verification_inactive">#9E9E9E</color>
 </resources>
 
