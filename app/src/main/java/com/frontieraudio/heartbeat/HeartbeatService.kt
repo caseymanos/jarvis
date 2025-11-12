@@ -18,11 +18,13 @@ import android.os.Trace
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import com.frontieraudio.heartbeat.audio.SpeechSegmentAssembler
 import com.frontieraudio.heartbeat.audio.AudioEffectUtils
+import com.frontieraudio.heartbeat.audio.SpeechSegmentAssembler
 import com.frontieraudio.heartbeat.diagnostics.DiagnosticsEvent
 import com.frontieraudio.heartbeat.diagnostics.DiagnosticsEvent.Source
 import com.frontieraudio.heartbeat.diagnostics.SegmentDiagnosticsAnalyzer
+import com.frontieraudio.heartbeat.location.LocationData
+import com.frontieraudio.heartbeat.location.LocationManager
 import com.frontieraudio.heartbeat.speaker.SpeakerVerificationConfig
 import com.frontieraudio.heartbeat.speaker.SpeakerVerificationConfigStore
 import com.frontieraudio.heartbeat.speaker.SpeakerVerificationResult
@@ -30,6 +32,11 @@ import com.frontieraudio.heartbeat.speaker.SpeakerVerifier
 import com.frontieraudio.heartbeat.speaker.VerifiedSpeechSegment
 import com.frontieraudio.heartbeat.speaker.VoiceProfile
 import com.frontieraudio.heartbeat.speaker.VoiceProfileStore
+import com.frontieraudio.heartbeat.transcription.CartesiaWebSocketClient
+import com.frontieraudio.heartbeat.transcription.TranscriptionConfig
+import com.frontieraudio.heartbeat.transcription.TranscriptionConfigStore
+import com.frontieraudio.heartbeat.transcription.TranscriptionResult
+import com.frontieraudio.heartbeat.debug.AppLogger
 import com.konovalov.vad.silero.Vad
 import com.konovalov.vad.silero.VadSilero
 import com.konovalov.vad.silero.config.FrameSize
@@ -41,19 +48,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.math.max
-import java.util.Locale
 import java.lang.ref.WeakReference
+import java.util.Locale
+import kotlin.math.max
 
 class HeartbeatService : Service() {
 
@@ -72,8 +79,7 @@ class HeartbeatService : Service() {
     private val segmentAssembler = SpeechSegmentAssembler(
         sampleRateHz = SampleRate.SAMPLE_RATE_16K.value,
         frameSizeSamples = FrameSize.FRAME_SIZE_512.value,
-        preRollDurationMs = PRE_ROLL_DURATION_MS,
-        minSegmentDurationMs = MIN_SEGMENT_DURATION_MS
+        preRollDurationMs = PRE_ROLL_DURATION_MS
     ) { segment ->
         Log.i(
             TAG,
@@ -81,7 +87,7 @@ class HeartbeatService : Service() {
         )
         Trace.beginSection("Heartbeat.Stage1SegmentReady")
         try {
-            speechSegmentsInternal.emit(segment)
+            speechSegmentsInternal.tryEmit(segment)
         } finally {
             Trace.endSection()
         }
@@ -91,6 +97,7 @@ class HeartbeatService : Service() {
     private val speakerVerifier: SpeakerVerifier
         get() = speakerVerifierLazy.value
     private val configStore by lazy { (application as HeartbeatApplication).configStore }
+    private val transcriptionConfigStore by lazy { (application as HeartbeatApplication).transcriptionConfigStore }
     private val verifiedSegmentsInternal = MutableSharedFlow<VerifiedSpeechSegment>(
         replay = 0,
         extraBufferCapacity = 4,
@@ -101,6 +108,24 @@ class HeartbeatService : Service() {
         extraBufferCapacity = 8,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
+
+    // Stage 3: Cloud Transcription components
+    private val transcriptionResultsInternal = MutableSharedFlow<TranscriptionResult>(
+        replay = 0,
+        extraBufferCapacity = 10,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    private val locationManager by lazy { LocationManager(applicationContext, serviceScope) }
+    private var cartesiaClient: CartesiaWebSocketClient? = null
+    private var currentLocation: LocationData? = null
+    private var transcriptionJob: Job? = null
+
+    // State machine for streaming transcription
+    private enum class TranscriptionState { IDLE, VERIFYING, STREAMING }
+    private var transcriptionState = TranscriptionState.IDLE
+    private val chunkBuffer = mutableListOf<SpeechSegment>()
+    private var pendingVerificationChunk: SpeechSegment? = null
+
     private val notVerifiedState = VerificationState(isVerified = false, similarity = null, validUntilElapsedRealtimeMs = null)
     private val verificationStateInternal = MutableStateFlow(notVerifiedState)
     private var verificationJob: Job? = null
@@ -121,15 +146,15 @@ class HeartbeatService : Service() {
         super.onCreate()
         instanceRef = WeakReference(this)
         createNotificationChannel()
-        // Enable atrace for this app so Trace.beginSection() calls are captured
         enableAppTracing()
         startVerificationPipeline()
+        startTranscriptionPipeline()
+        startLocationTracking()
     }
 
     private fun enableAppTracing() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Use reflection to call Trace.setAppTracingAllowed(true)
                 val method = Trace::class.java.getMethod("setAppTracingAllowed", Boolean::class.javaPrimitiveType)
                 method.invoke(null, true)
                 Log.i(TAG, "App tracing enabled")
@@ -149,6 +174,8 @@ class HeartbeatService : Service() {
         super.onDestroy()
         stopAudioPipeline()
         stopVerificationPipeline()
+        stopTranscriptionPipeline()
+        stopLocationTracking()
         if (speakerVerifierLazy.isInitialized()) {
             speakerVerifier.close()
         }
@@ -160,12 +187,11 @@ class HeartbeatService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     fun speechSegments(): SharedFlow<SpeechSegment> = speechSegmentsInternal.asSharedFlow()
-
     fun verifiedSegments(): SharedFlow<VerifiedSpeechSegment> = verifiedSegmentsInternal.asSharedFlow()
-
     fun diagnosticsFlow(): SharedFlow<DiagnosticsEvent> = diagnosticsInternal.asSharedFlow()
-
     fun verificationStateFlow(): StateFlow<VerificationState> = verificationStateInternal.asStateFlow()
+    fun transcriptionResults(): SharedFlow<TranscriptionResult> = transcriptionResultsInternal.asSharedFlow()
+    fun getCurrentLocation(): LocationData? = currentLocation
 
     fun verificationState(): VerificationState {
         val now = SystemClock.elapsedRealtime()
@@ -178,7 +204,7 @@ class HeartbeatService : Service() {
                 validUntilElapsedRealtimeMs = state.validUntilMs
             )
         } else {
-            VerificationState(isVerified = false, similarity = null, validUntilElapsedRealtimeMs = null)
+            notVerifiedState
         }
     }
 
@@ -190,22 +216,14 @@ class HeartbeatService : Service() {
         verificationStateInternal.value = notVerifiedState
 
         profileJob = serviceScope.launch {
-            Log.d(TAG, "Profile collection job started, about to collect from voiceProfileStore")
-            try {
-                voiceProfileStore.voiceProfileFlow.collect { profile ->
-                    Log.d(TAG, "Profile collection: received emission on thread ${Thread.currentThread().name}")
-                    currentProfile = profile
-                    Log.d(TAG, "Profile updated: ${if (profile != null) "loaded (${profile.samplesCaptured} samples)" else "null"}")
-                    if (profile == null) {
-                        activeVerification = null
-                        verificationStateInternal.value = notVerifiedState
-                    }
-                    Log.d(TAG, "Profile collection: finished processing emission, waiting for next")
+            voiceProfileStore.voiceProfileFlow.collect { profile ->
+                currentProfile = profile
+                Log.d(TAG, "Profile updated: ${if (profile != null) "loaded" else "null"}")
+                if (profile == null) {
+                    activeVerification = null
+                    verificationStateInternal.value = notVerifiedState
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Profile collection error", e)
             }
-            Log.d(TAG, "Profile collection job ended")
         }
 
         configJob = serviceScope.launch {
@@ -217,7 +235,7 @@ class HeartbeatService : Service() {
 
         verificationJob = serviceScope.launch {
             speechSegmentsInternal.collect { segment ->
-                handleSegmentForVerification(segment)
+                handleAudioChunk(segment)
             }
         }
     }
@@ -233,11 +251,30 @@ class HeartbeatService : Service() {
         verificationStateInternal.value = notVerifiedState
     }
 
-    private suspend fun handleSegmentForVerification(segment: SpeechSegment) {
-        Log.d(TAG, "Stage2: processing segment ${segment.id}")
+    private suspend fun handleAudioChunk(chunk: SpeechSegment) {
+        when (transcriptionState) {
+            TranscriptionState.IDLE -> {
+                Log.d(TAG, "State: IDLE. Received chunk ${chunk.id}. Starting verification.")
+                transcriptionState = TranscriptionState.VERIFYING
+                pendingVerificationChunk = chunk
+                verifyChunk(chunk)
+            }
+            TranscriptionState.VERIFYING -> {
+                Log.d(TAG, "State: VERIFYING. Buffering chunk ${chunk.id}.")
+                chunkBuffer.add(chunk)
+            }
+            TranscriptionState.STREAMING -> {
+                Log.d(TAG, "State: STREAMING. Streaming chunk ${chunk.id}.")
+                cartesiaClient?.streamAudioChunk(chunk.samples)
+            }
+        }
+    }
+
+    private suspend fun verifyChunk(chunk: SpeechSegment) {
+        Log.d(TAG, "Stage2: processing chunk ${chunk.id}")
         val profile = currentProfile ?: run {
-            Log.d(TAG, "Stage2: skipping segment ${segment.id} - no enrolled profile")
-            verificationStateInternal.value = notVerifiedState
+            Log.d(TAG, "Stage2: skipping chunk ${chunk.id} - no enrolled profile")
+            resetTranscriptionState()
             return
         }
         val config = currentConfig
@@ -245,76 +282,76 @@ class HeartbeatService : Service() {
         pruneActiveState(nowMs)
 
         if (nowMs - lastRejectAtMs < config.negativeCooldownMillis) {
-            Log.d(TAG, "Stage2: cooling down; skipping segment ${segment.id}")
+            Log.d(TAG, "Stage2: cooling down; skipping chunk ${chunk.id}")
+            resetTranscriptionState() // Reset state machine if in cooldown
             return
         }
 
-        val metrics = SegmentDiagnosticsAnalyzer.analyze(segment)
-        logSegmentDiagnostics(segment, metrics)
-        val combinedWarnings = metrics.warnings.toMutableList()
+        val metrics = SegmentDiagnosticsAnalyzer.analyze(chunk)
+        logSegmentDiagnostics(chunk, metrics)
         var similarity: Float? = null
         var matched: Boolean? = null
 
-        when (val result = speakerVerifier.verify(segment, profile, config.matchThreshold)) {
+        when (val result = speakerVerifier.verify(chunk, profile, config.matchThreshold)) {
             is SpeakerVerificationResult.Match -> {
                 similarity = result.similarity
                 matched = true
-                val validUntil = nowMs + config.positiveRetentionMillis
-                activeVerification = ActiveVerificationState(
-                    similarity = result.similarity,
-                    scores = result.scores,
-                    validUntilMs = validUntil
-                )
-                verificationStateInternal.value = VerificationState(
-                    isVerified = true,
-                    similarity = result.similarity,
-                    validUntilElapsedRealtimeMs = validUntil
-                )
-                emitVerifiedSegment(segment, result.similarity, result.scores)
-                Log.i(
-                    TAG,
-                    "Stage2 accepted segment id=${segment.id} similarity=${String.format(Locale.US, "%.3f", result.similarity)}"
-                )
+                Log.i(TAG, "Stage2 accepted chunk id=${chunk.id} similarity=${String.format(Locale.US, "%.3f", result.similarity)}")
+                onVerificationSuccess(result)
             }
             is SpeakerVerificationResult.NoMatch -> {
                 similarity = result.similarity
                 matched = false
-                activeVerification = null
                 lastRejectAtMs = nowMs
-                verificationStateInternal.value = notVerifiedState
-                Log.i(
-                    TAG,
-                    "Stage2 rejected segment id=${segment.id} similarity=${String.format(Locale.US, "%.3f", result.similarity)}"
-                )
+                Log.i(TAG, "Stage2 rejected chunk id=${chunk.id} similarity=${String.format(Locale.US, "%.3f", result.similarity)}")
+                onVerificationFailure()
             }
-            is SpeakerVerificationResult.NotEnrolled -> {
-                combinedWarnings.add("Profile missing during verification")
-                activeVerification = null
+            is SpeakerVerificationResult.NotEnrolled, is SpeakerVerificationResult.Error -> {
                 lastRejectAtMs = nowMs
-                verificationStateInternal.value = notVerifiedState
-                Log.w(TAG, "Stage2 reported not enrolled; dropping segment ${segment.id}")
-            }
-            is SpeakerVerificationResult.Error -> {
-                combinedWarnings.add("Verification error: ${result.throwable?.javaClass?.simpleName ?: "unknown"}")
-                activeVerification = null
-                lastRejectAtMs = nowMs
-                verificationStateInternal.value = notVerifiedState
-                Log.e(TAG, "Stage2 error for segment ${segment.id}", result.throwable)
+                Log.e(TAG, "Stage2 error or not enrolled for chunk ${chunk.id}", (result as? SpeakerVerificationResult.Error)?.throwable)
+                onVerificationFailure()
             }
         }
-
-        emitSegmentDiagnostics(segment, metrics, similarity, matched, combinedWarnings)
+        // Diagnostics emission can be added here if needed
     }
 
-    private suspend fun emitVerifiedSegment(segment: SpeechSegment, similarity: Float, scores: FloatArray) {
-        verifiedSegmentsInternal.emit(
-            VerifiedSpeechSegment(
-                segment = segment,
-                similarity = similarity,
-                scores = scores,
-                verifiedAtMillis = System.currentTimeMillis()
-            )
-        )
+    private fun onVerificationSuccess(result: SpeakerVerificationResult.Match) {
+        serviceScope.launch {
+            Log.i(TAG, "Verification successful. Starting streaming session.")
+            transcriptionState = TranscriptionState.STREAMING
+
+            // Start the WebSocket session
+            cartesiaClient?.startTranscriptionSession()
+
+            // Stream the chunk that was just verified
+            pendingVerificationChunk?.let {
+                Log.d(TAG, "Streaming the pending verification chunk: ${it.id}")
+                cartesiaClient?.streamAudioChunk(it.samples)
+            }
+
+            // Stream any buffered chunks
+            if (chunkBuffer.isNotEmpty()) {
+                Log.d(TAG, "Streaming ${chunkBuffer.size} buffered chunks.")
+                chunkBuffer.forEach { bufferedChunk ->
+                    cartesiaClient?.streamAudioChunk(bufferedChunk.samples)
+                }
+            }
+
+            // Clear state
+            pendingVerificationChunk = null
+            chunkBuffer.clear()
+        }
+    }
+
+    private fun onVerificationFailure() {
+        Log.w(TAG, "Verification failed. Discarding chunks and resetting state.")
+        resetTranscriptionState()
+    }
+
+    private fun resetTranscriptionState() {
+        transcriptionState = TranscriptionState.IDLE
+        chunkBuffer.clear()
+        pendingVerificationChunk = null
     }
 
     private fun logSegmentDiagnostics(segment: SpeechSegment, metrics: SegmentDiagnosticsAnalyzer.Metrics) {
@@ -334,48 +371,19 @@ class HeartbeatService : Service() {
         )
     }
 
-    private fun emitSegmentDiagnostics(
-        segment: SpeechSegment,
-        metrics: SegmentDiagnosticsAnalyzer.Metrics,
-        similarity: Float?,
-        matched: Boolean?,
-        warnings: List<String>
-    ) {
-        diagnosticsInternal.tryEmit(
-            DiagnosticsEvent.SegmentMetrics(
-                source = Source.VERIFICATION,
-                segmentId = segment.id,
-                durationMs = segment.durationMillis,
-                rmsDbfs = metrics.rmsDbfs,
-                clippingRatio = metrics.clippingRatio,
-                speechRatio = metrics.speechRatio,
-                similarity = similarity,
-                matched = matched,
-                warnings = warnings
-            )
-        )
-    }
-
     private fun detectAudioEffects(record: AudioRecord) {
         val activeEffects = AudioEffectUtils.detectEnabledEffects(record)
         if (activeEffects.isEmpty()) {
             if (!lastAudioEffectsWarning.isNullOrEmpty()) {
                 lastAudioEffectsWarning = null
-                diagnosticsInternal.tryEmit(
-                    DiagnosticsEvent.AudioEffectsWarning(Source.VERIFICATION, emptyList())
-                )
+                diagnosticsInternal.tryEmit(DiagnosticsEvent.AudioEffectsWarning(Source.VERIFICATION, emptyList()))
             }
             return
         }
-        if (lastAudioEffectsWarning == activeEffects) {
-            return
-        }
+        if (lastAudioEffectsWarning == activeEffects) return
         lastAudioEffectsWarning = activeEffects.toList()
-        val formatted = activeEffects.joinToString()
-        Log.w(TAG, "Detected device audio effects enabled: $formatted")
-        diagnosticsInternal.tryEmit(
-            DiagnosticsEvent.AudioEffectsWarning(Source.VERIFICATION, activeEffects)
-        )
+        Log.w(TAG, "Detected device audio effects enabled: ${activeEffects.joinToString()}")
+        diagnosticsInternal.tryEmit(DiagnosticsEvent.AudioEffectsWarning(Source.VERIFICATION, activeEffects))
     }
 
     private fun pruneActiveState(nowMs: Long) {
@@ -387,10 +395,7 @@ class HeartbeatService : Service() {
     }
 
     private fun startAudioPipeline() {
-        if (processingJob?.isActive == true) {
-            return
-        }
-
+        if (processingJob?.isActive == true) return
         processingJob = serviceScope.launch {
             var backoffMs = RESTART_BACKOFF_INITIAL_MS
             while (isActive) {
@@ -398,13 +403,11 @@ class HeartbeatService : Service() {
                     prepareAudioComponents()
                     processAudioStream()
                     return@launch
-                } catch (cancel: CancellationException) {
-                    throw cancel
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (t: Throwable) {
                     Log.e(TAG, "Audio processing failed", t)
-                    if (!isActive) {
-                        throw t
-                    }
+                    if (!isActive) throw t
                     delay(backoffMs)
                     backoffMs = (backoffMs * 2).coerceAtMost(RESTART_BACKOFF_MAX_MS)
                 } finally {
@@ -422,56 +425,23 @@ class HeartbeatService : Service() {
 
     @SuppressLint("MissingPermission")
     private suspend fun prepareAudioComponents() {
-        if (audioRecord != null && vad != null) {
-            return
-        }
+        if (audioRecord != null && vad != null) return
 
         val sampleRate = SampleRate.SAMPLE_RATE_16K
         val frameSize = FrameSize.FRAME_SIZE_512
-
-        val minBufferSize = AudioRecord.getMinBufferSize(
-            sampleRate.value,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
-        )
-
+        val minBufferSize = AudioRecord.getMinBufferSize(sampleRate.value, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
             throw IllegalStateException("Invalid minimum buffer size for AudioRecord")
         }
-
-        val bufferSizeInBytes = max(
-            minBufferSize,
-            frameSize.value * BYTES_PER_SAMPLE
-        )
-
-        val audioFormat = AudioFormat.Builder()
-            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-            .setSampleRate(sampleRate.value)
-            .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-            .build()
-
-        val record = AudioRecord.Builder()
-            .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
-            .setAudioFormat(audioFormat)
-            .setBufferSizeInBytes(bufferSizeInBytes)
-            .build()
-
+        val bufferSizeInBytes = max(minBufferSize, frameSize.value * BYTES_PER_SAMPLE)
+        val audioFormat = AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sampleRate.value).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
+        val record = AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION).setAudioFormat(audioFormat).setBufferSizeInBytes(bufferSizeInBytes).build()
         if (record.state != AudioRecord.STATE_INITIALIZED) {
             record.release()
             throw IllegalStateException("AudioRecord failed to initialize")
         }
-
         detectAudioEffects(record)
-
-        val vadInstance = Vad.builder()
-            .setContext(applicationContext)
-            .setSampleRate(sampleRate)
-            .setFrameSize(frameSize)
-            .setMode(Mode.NORMAL)
-            .setSpeechDurationMs(SPEECH_DURATION_MS)
-            .setSilenceDurationMs(SILENCE_DURATION_MS)
-            .build()
-
+        val vadInstance = Vad.builder().setContext(applicationContext).setSampleRate(sampleRate).setFrameSize(frameSize).setMode(Mode.NORMAL).setSpeechDurationMs(SPEECH_DURATION_MS).setSilenceDurationMs(SILENCE_DURATION_MS).build()
         audioRecord = record
         vad = vadInstance
     }
@@ -479,47 +449,20 @@ class HeartbeatService : Service() {
     private suspend fun processAudioStream() {
         val record = audioRecord ?: return
         val detector = vad ?: return
-
-        val frameSizeSamples = detector.frameSize.value
-        val frameBuffer = ShortArray(frameSizeSamples)
-        var frameOffset = 0
-
+        val frameBuffer = ShortArray(detector.frameSize.value)
         record.startRecording()
-
         while (serviceScope.isActive) {
-            val read = record.read(
-                frameBuffer,
-                frameOffset,
-                frameSizeSamples - frameOffset,
-                AudioRecord.READ_BLOCKING
-            )
-            if (read < 0) {
-                throw IllegalStateException(
-                    "AudioRecord.read() failed with code $read (${audioReadErrorName(read)})"
-                )
-            }
-
-            if (read == 0) {
-                continue
-            }
-
-            frameOffset += read
-
-            if (frameOffset >= frameSizeSamples) {
-                val frameTimestampNs = SystemClock.elapsedRealtimeNanos()
-                val frameCopy = frameBuffer.copyOf()
-                val isSpeech = detector.isSpeech(frameBuffer)
-                handleSpeechResult(frameCopy, isSpeech, frameTimestampNs)
-                frameOffset = 0
-            }
+            val read = record.read(frameBuffer, 0, frameBuffer.size, AudioRecord.READ_BLOCKING)
+            if (read < 0) throw IllegalStateException("AudioRecord.read() failed with code $read (${audioReadErrorName(read)})")
+            if (read == 0) continue
+            val frameTimestampNs = SystemClock.elapsedRealtimeNanos()
+            val frameCopy = frameBuffer.copyOf()
+            val isSpeech = detector.isSpeech(frameCopy)
+            handleSpeechResult(frameCopy, isSpeech, frameTimestampNs)
         }
     }
 
-    private suspend fun handleSpeechResult(
-        frame: ShortArray,
-        isSpeech: Boolean,
-        frameTimestampNs: Long
-    ) {
+    private suspend fun handleSpeechResult(frame: ShortArray, isSpeech: Boolean, frameTimestampNs: Long) {
         segmentAssembler.onFrame(frame, isSpeech, frameTimestampNs)
 
         if (isSpeech && !speechDetected) {
@@ -529,6 +472,12 @@ class HeartbeatService : Service() {
             Trace.endSection()
         } else if (!isSpeech && speechDetected) {
             Trace.beginSection("Heartbeat.VAD_SpeechEnded")
+            Log.i(TAG, "VAD: Speech Ended")
+            if (transcriptionState == TranscriptionState.STREAMING) {
+                Log.i(TAG, "Speech ended, finalizing transcription session.")
+                cartesiaClient?.endTranscriptionSession()
+            }
+            resetTranscriptionState()
             Trace.endSection()
             speechDetected = false
         }
@@ -539,7 +488,6 @@ class HeartbeatService : Service() {
             try {
                 stop()
             } catch (ignored: IllegalStateException) {
-                // Already stopped.
             }
             release()
         }
@@ -554,40 +502,77 @@ class HeartbeatService : Service() {
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
+        val pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        val pendingIntent = PendingIntent.getActivity(this, 0, launchIntent, pendingIntentFlags)
+        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID).setContentTitle(getString(R.string.foreground_notification_title)).setContentText(getString(R.string.foreground_notification_text)).setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentIntent(pendingIntent).setOngoing(true).setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE).build()
+    }
 
-        val pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT or
-            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+    private fun startTranscriptionPipeline() {
+        Log.d(TAG, "Starting Stage 3 transcription pipeline")
+        var configJob: Job? = serviceScope.launch {
+            transcriptionConfigStore.configFlow.collect { config ->
+                if (config.cartesiaApiKey.isNotBlank()) {
+                    Log.i(TAG, "Transcription config updated with API key.")
+                    cartesiaClient?.disconnect()
+                    cartesiaClient = CartesiaWebSocketClient(config, serviceScope)
+                    cartesiaClient?.connect()
+                } else {
+                    Log.w(TAG, "Cartesia API key not configured")
+                    cartesiaClient?.disconnect()
+                    cartesiaClient = null
+                }
+            }
+        }
+        transcriptionJob = serviceScope.launch {
+            while (isActive) {
+                cartesiaClient?.transcriptionResults?.collect { result ->
+                    handleTranscriptionResult(result)
+                }
+                delay(1000)
+            }
+        }
+    }
 
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            launchIntent,
-            pendingIntentFlags
-        )
+    private fun stopTranscriptionPipeline() {
+        transcriptionJob?.cancel()
+        transcriptionJob = null
+        cartesiaClient?.disconnect()
+        cartesiaClient = null
+        Log.d(TAG, "Stage 3 transcription pipeline stopped")
+    }
 
-        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle(getString(R.string.foreground_notification_title))
-            .setContentText(getString(R.string.foreground_notification_text))
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-            .build()
+    private fun startLocationTracking() {
+        if (locationManager.hasLocationPermissions()) {
+            locationManager.startLocationUpdates()
+            serviceScope.launch {
+                locationManager.locationUpdates.collect { location ->
+                    currentLocation = location
+                    Log.d(TAG, "Location updated: lat=${location.latitude}, lon=${location.longitude}")
+                }
+            }
+        } else {
+            Log.w(TAG, "Location permissions not granted, location tracking disabled")
+        }
+    }
+
+    private fun stopLocationTracking() {
+        locationManager.cleanup()
+        currentLocation = null
+        Log.d(TAG, "Location tracking stopped")
+    }
+
+    private suspend fun handleTranscriptionResult(result: TranscriptionResult) {
+        Log.i(TAG, "Stage 3 transcription completed: transcript='${result.transcript}', isFinal=${result.isFinal}")
+        transcriptionResultsInternal.emit(result)
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-
-        val channel = NotificationChannel(
-            NOTIFICATION_CHANNEL_ID,
-            getString(R.string.notification_channel_name),
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
+        val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, getString(R.string.notification_channel_name), NotificationManager.IMPORTANCE_LOW).apply {
             description = getString(R.string.notification_channel_desc)
             setShowBadge(false)
             setSound(null, null)
         }
-
         val manager = getSystemService(NotificationManager::class.java)
         manager?.createNotificationChannel(channel)
     }
@@ -600,7 +585,7 @@ class HeartbeatService : Service() {
         private const val SPEECH_DURATION_MS = 80
         private const val SILENCE_DURATION_MS = 300
         private const val PRE_ROLL_DURATION_MS = 240
-        private const val MIN_SEGMENT_DURATION_MS = 2000  // Match enrollment requirements for consistent quality
+        private const val MIN_SEGMENT_DURATION_MS = 500 // Lowered for streaming
         private const val RESTART_BACKOFF_INITIAL_MS = 1_000L
         private const val RESTART_BACKOFF_MAX_MS = 8_000L
 
@@ -640,4 +625,3 @@ class HeartbeatService : Service() {
         val validUntilMs: Long
     )
 }
-

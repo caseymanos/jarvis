@@ -173,21 +173,20 @@ class EnrollmentActivity : AppCompatActivity() {
             val assembler = SpeechSegmentAssembler(
                 sampleRateHz = sampleRate.value,
                 frameSizeSamples = frameSize.value,
-                preRollDurationMs = ENROLLMENT_PREROLL_MS,
-                minSegmentDurationMs = ENROLLMENT_MIN_SEGMENT_MS
+                preRollDurationMs = ENROLLMENT_PREROLL_MS
             ) { segment ->
                 try {
                     val result = profiler.enroll(segment.samples)
-                    
+
                     // Always count samples - Eagle handles quality internally
                     samplesCaptured += segment.samples.size
-                    
+
                     // Track quality for user feedback
                     val isGoodQuality = result.feedback == EagleProfilerEnrollFeedback.AUDIO_OK
                     if (!isGoodQuality) {
                         Log.d(TAG, "Eagle feedback for segment: ${result.feedback} (percentage: ${result.percentage})")
                     }
-                    
+
                     withContext(Dispatchers.Main) {
                         updateVoicedTime()
                         handleEnrollProgress(result.percentage, result.feedback, isGoodQuality)
@@ -246,7 +245,7 @@ class EnrollmentActivity : AppCompatActivity() {
                 val percentSnapshot = latestProgressPercent
                 val voicedSecondsSnapshot = getVoicedSeconds()
                 Log.d(TAG, "Final enrollment percentage: $percentSnapshot% (voiced ${"%.1f".format(voicedSecondsSnapshot)}s)")
-                
+
                 if (percentSnapshot >= 99.5f && voicedSecondsSnapshot + VOICED_TIME_TOLERANCE_S >= MIN_TOTAL_VOICED_SECONDS) {
                     Log.d(TAG, "Enrollment complete, starting export process")
                     // Export on IO thread (this is blocking and can take time)
@@ -303,7 +302,7 @@ class EnrollmentActivity : AppCompatActivity() {
         setRecordingUi(false)
         primaryButton.text = getString(R.string.enrollment_restart)
         primaryButton.isEnabled = true
-        
+
         // Change Cancel button to "Done" that returns to MainActivity
         cancelButton.text = getString(R.string.enrollment_done)
         cancelButton.setOnClickListener {
@@ -319,11 +318,11 @@ class EnrollmentActivity : AppCompatActivity() {
             val profile = profiler.export()
             val exportDuration = System.currentTimeMillis() - startTime
             Log.d(TAG, "Eagle profile export completed in ${exportDuration}ms")
-            
+
             val bytes = profile.bytes
             Log.d(TAG, "Profile size: ${bytes.size} bytes")
             profile.delete()
-            
+
             VoiceProfile(
                 profileBytes = bytes,
                 createdAtMillis = System.currentTimeMillis(),
@@ -365,12 +364,12 @@ class EnrollmentActivity : AppCompatActivity() {
     }
 
     private fun handleEnrollProgress(
-        percentage: Float, 
+        percentage: Float,
         feedback: EagleProfilerEnrollFeedback,
         wasAccepted: Boolean = true
     ) {
         updateProgress(percentage)
-        
+
         val statusMessage = when (feedback) {
             EagleProfilerEnrollFeedback.AUDIO_OK -> getString(R.string.enrollment_feedback_audio_ok)
             EagleProfilerEnrollFeedback.AUDIO_TOO_SHORT -> getString(R.string.enrollment_feedback_too_short)
@@ -378,13 +377,13 @@ class EnrollmentActivity : AppCompatActivity() {
             EagleProfilerEnrollFeedback.NO_VOICE_FOUND -> getString(R.string.enrollment_feedback_no_voice)
             EagleProfilerEnrollFeedback.QUALITY_ISSUE -> getString(R.string.enrollment_feedback_quality_issue)
         }
-        
+
         // Show warning indicator for poor quality
         val prefix = if (wasAccepted) "" else "⚠️ "
         val voicedSeconds = getVoicedSeconds()
         statusText.text = getString(R.string.enrollment_progress_status, prefix + statusMessage, percentage.toInt())
         updateFeedbackTip(feedback, wasAccepted)
-        
+
         if (!completionRequested && percentage >= 99.5f) {
             if (voicedSeconds + VOICED_TIME_TOLERANCE_S >= MIN_TOTAL_VOICED_SECONDS) {
                 completionRequested = true
@@ -507,7 +506,6 @@ class EnrollmentActivity : AppCompatActivity() {
         private const val SAMPLE_RATE_HZ = 16_000f
         private const val MIN_TOTAL_VOICED_SECONDS = 18f
         private const val VOICED_TIME_TOLERANCE_S = 0.1f
-    }
     }
 
     private fun EagleException.toDetailedString(): String {

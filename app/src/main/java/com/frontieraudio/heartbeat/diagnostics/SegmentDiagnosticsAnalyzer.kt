@@ -87,5 +87,5 @@ object SegmentDiagnosticsAnalyzer {
     private fun formatPercent(ratio: Float): String = String.format("%.1f%%", ratio * 100f)
 
     private const val MAX_SHORT = Short.MAX_VALUE.toFloat()
-    private const val LN_10 = ln(10.0)
+    private val LN_10 = ln(10.0)
 }

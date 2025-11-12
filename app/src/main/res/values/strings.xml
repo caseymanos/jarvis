@@ -36,7 +36,7 @@
     <string name="enrollment_feedback_quality_issue">Audio quality issue detected</string>
     <string name="enrollment_tip_audio_too_short">Hold each phrase for another second or two before pausing.</string>
     <string name="enrollment_tip_no_voice">Move closer to the mic and limit background noise so we only capture your voice.</string>
-    <string name="enrollment_tip_quality_issue">We're hearing muffled or echoing audio - try a quieter space or speak directly toward the mic.</string>
+    <string name="enrollment_tip_quality_issue">We\'re hearing muffled or echoing audio - try a quieter space or speak directly toward the mic.</string>
     <string name="enrollment_tip_unknown_speaker">Stay consistent - use the same voice that started this enrollment.</string>
     <string name="enrollment_warning_audio_effects">Device audio enhancements detected (%1$s). Disable AGC, noise suppression, or voice effects for best accuracy.</string>
     <string name="open_enrollment">Open Eagle Enrollment</string>
@@ -69,4 +69,3 @@
     <string name="calibration_status_matched">Matched speaker detected (similarity %1$.2f). Use a different voice for calibration.</string>
     <string name="enrollment_done">Done</string>
 </resources>
-

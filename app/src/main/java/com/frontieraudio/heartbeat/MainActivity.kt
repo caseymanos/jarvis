@@ -10,6 +10,7 @@ import android.util.Log
 import android.widget.Button
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.ScrollView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -19,9 +20,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.frontieraudio.heartbeat.diagnostics.DiagnosticsEvent
+import com.frontieraudio.heartbeat.location.LocationData
 import com.frontieraudio.heartbeat.speaker.SpeakerVerificationConfig
 import com.frontieraudio.heartbeat.speaker.SpeakerVerificationConfigStore
 import com.frontieraudio.heartbeat.speaker.VoiceProfileStore
+import com.frontieraudio.heartbeat.transcription.TranscriptionResult
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -42,6 +45,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var retentionValue: TextView
     private lateinit var cooldownSeekBar: SeekBar
     private lateinit var cooldownValue: TextView
+    private lateinit var debugButton: Button
+    private lateinit var logViewerButton: Button
     private lateinit var verificationCard: CardView
     private lateinit var verificationStatusText: TextView
     private lateinit var verificationSimilarityText: TextView
@@ -49,6 +54,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var verificationDiagnosticsText: TextView
     private lateinit var calibrationButton: Button
     private lateinit var calibrationStatusText: TextView
+    private lateinit var transcriptionCard: androidx.cardview.widget.CardView
+    private lateinit var transcriptionStatusText: TextView
+    private lateinit var transcriptionResultText: TextView
+    private lateinit var locationText: TextView
+    private lateinit var liveTranscriptScrollView: ScrollView
+    private lateinit var liveTranscriptText: TextView
 
     private val voiceProfileStore by lazy { (application as HeartbeatApplication).voiceProfileStore }
     private val configStore by lazy { (application as HeartbeatApplication).configStore }
@@ -69,6 +80,10 @@ class MainActivity : AppCompatActivity() {
     private var verificationStateJob: Job? = null
     private var countdownJob: Job? = null
 
+    // Live transcript state
+    private val liveTranscriptLines = mutableListOf<String>()
+    private val maxLiveTranscriptLines = 50
+
     private val recordAudioPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) {
@@ -85,6 +100,22 @@ class MainActivity : AppCompatActivity() {
             if (!granted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 updateStatusText(getString(R.string.notifications_permission_denied))
             }
+            // Request location permissions after notification permission
+            requestLocationPermissionsIfNeeded()
+        }
+        
+    private val locationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            val fineLocationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+            val coarseLocationGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
+            
+            if (fineLocationGranted || coarseLocationGranted) {
+                Log.d("MainActivity", "Location permissions granted")
+                updateStatusText("Location permissions granted - GPS tracking enabled")
+            } else {
+                Log.w("MainActivity", "Location permissions denied")
+                updateStatusText("Location permissions denied - GPS tracking disabled")
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -95,6 +126,7 @@ class MainActivity : AppCompatActivity() {
         configureButtons()
         observeStores()
         observeVerificationState()
+        observeTranscriptionResults()
         ensurePermissionThenStart()
     }
 
@@ -121,7 +153,30 @@ class MainActivity : AppCompatActivity() {
         verificationDiagnosticsText.isVisible = false
         calibrationButton = findViewById(R.id.calibrationButton)
         calibrationStatusText = findViewById(R.id.calibrationStatus)
+        debugButton = Button(this).apply {
+            text = "Debug Transcription"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, com.frontieraudio.heartbeat.debug.TranscriptionDebugActivity::class.java))
+            }
+        }
+        logViewerButton = Button(this).apply {
+            text = "View Logs"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, com.frontieraudio.heartbeat.debug.LogViewerActivity::class.java))
+            }
+        }
         calibrationStatusText.isVisible = false
+        
+        // Transcription UI components
+        transcriptionCard = findViewById(R.id.transcriptionCard)
+        transcriptionStatusText = findViewById(R.id.transcriptionStatusText)
+        transcriptionResultText = findViewById(R.id.transcriptionResultText)
+        locationText = findViewById(R.id.locationText)
+
+        // Live transcript UI components
+        liveTranscriptScrollView = findViewById(R.id.liveTranscriptScrollView)
+        liveTranscriptText = findViewById(R.id.liveTranscriptText)
+
         updateVerificationIndicator(HeartbeatService.VerificationState(false, null, null))
     }
 
@@ -140,6 +195,12 @@ class MainActivity : AppCompatActivity() {
                 calibrationSuggestion != null -> applyCalibrationSuggestion()
                 else -> startCalibration()
             }
+        }
+        debugButton.setOnClickListener {
+            startActivity(Intent(this, com.frontieraudio.heartbeat.debug.TranscriptionDebugActivity::class.java))
+        }
+        logViewerButton.setOnClickListener {
+            startActivity(Intent(this, com.frontieraudio.heartbeat.debug.LogViewerActivity::class.java))
         }
     }
 
@@ -299,6 +360,117 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+    
+    private fun observeTranscriptionResults() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                var activeService: HeartbeatService? = null
+                var transcriptionCollector: Job? = null
+                try {
+                    while (isActive) {
+                        val service = HeartbeatService.getInstance()
+                        when {
+                            service != null && service !== activeService -> {
+                                transcriptionCollector?.cancel()
+                                activeService = service
+                                transcriptionCollector = launch {
+                                    service.transcriptionResults().collectLatest { result ->
+                                        handleTranscriptionResult(result)
+                                    }
+                                }
+                            }
+                            service == null && activeService != null -> {
+                                transcriptionCollector?.cancel()
+                                transcriptionCollector = null
+                                activeService = null
+                                updateTranscriptionStatus("No service connection")
+                            }
+                        }
+                        delay(SERVICE_RETRY_DELAY_MS)
+                    }
+                } finally {
+                    transcriptionCollector?.cancel()
+                }
+            }
+        }
+    }
+    
+    private fun handleTranscriptionResult(result: TranscriptionResult) {
+        Log.d("MainActivity", "Received transcription: ${result.transcript}")
+
+        // Update transcription result text
+        if (result.transcript.isNotBlank() && !result.transcript.startsWith("[")) {
+            transcriptionResultText.text = result.transcript
+            transcriptionResultText.isVisible = true
+
+            // Show confidence if available
+            val confidenceText = if (result.confidence != null) {
+                " (Confidence: ${(result.confidence * 100).toInt()}%)"
+            } else {
+                ""
+            }
+            transcriptionResultText.text = "${result.transcript}$confidenceText"
+
+            // Add to live transcript - this only happens for verified speech
+            addLiveTranscriptLine(result.transcript)
+        } else {
+            transcriptionResultText.isVisible = false
+        }
+
+        // Update location if available
+        result.locationData?.let { location ->
+            locationText.text = formatLocation(location)
+            locationText.isVisible = true
+        } ?: run {
+            locationText.isVisible = false
+        }
+
+        updateTranscriptionStatus("Transcription complete")
+    }
+    
+    private fun updateTranscriptionStatus(status: String) {
+        transcriptionStatusText.text = status
+    }
+    
+    private fun formatLocation(location: LocationData): String {
+        val lat = String.format(Locale.US, "%.6f", location.latitude)
+        val lon = String.format(Locale.US, "%.6f", location.longitude)
+        val accuracy = if (location.accuracy != null) {
+            " (±${location.accuracy}m)"
+        } else {
+            ""
+        }
+        return "Location: $lat°, $lon°$accuracy"
+    }
+
+    private fun addLiveTranscriptLine(transcript: String) {
+        if (transcript.isBlank() || transcript.startsWith("[") || transcript.startsWith("Error:")) {
+            return // Skip system messages and errors
+        }
+
+        // Add timestamp to each line
+        val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+            .format(java.util.Date())
+        val formattedLine = "[$timestamp] $transcript"
+
+        // Add to transcript lines
+        liveTranscriptLines.add(formattedLine)
+
+        // Limit the number of lines to prevent memory issues
+        if (liveTranscriptLines.size > maxLiveTranscriptLines) {
+            liveTranscriptLines.removeAt(0)
+        }
+
+        // Update UI on main thread
+        runOnUiThread {
+            liveTranscriptText.text = liveTranscriptLines.joinToString("\n")
+
+            // Auto-scroll to bottom
+            liveTranscriptScrollView.post {
+                liveTranscriptScrollView.fullScroll(ScrollView.FOCUS_DOWN)
+            }
+        }
+    }
 
     private fun ensurePermissionThenStart() {
         val statusText = if (isRecordAudioGranted()) {
@@ -337,15 +509,44 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            requestLocationPermissionsIfNeeded()
+            return
+        }
         if (ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
         ) {
+            requestLocationPermissionsIfNeeded()
             return
         }
         postNotificationsPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+    
+    private fun requestLocationPermissionsIfNeeded() {
+        val fineLocationGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        val coarseLocationGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        if (fineLocationGranted || coarseLocationGranted) {
+            Log.d("MainActivity", "Location permissions already granted")
+            return
+        }
+        
+        Log.d("MainActivity", "Requesting location permissions")
+        locationPermissionLauncher.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        )
     }
 
     private fun updateThresholdValue(value: Float) {
