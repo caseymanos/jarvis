@@ -2,6 +2,7 @@ package com.frontieraudio.heartbeat.transcription
 
 import com.frontieraudio.heartbeat.speaker.VerifiedSpeechSegment
 import com.frontieraudio.heartbeat.location.LocationData
+import com.frontieraudio.heartbeat.metrics.TranscriptionMetrics
 
 data class TranscriptionResult(
     val segment: VerifiedSpeechSegment,
@@ -9,7 +10,8 @@ data class TranscriptionResult(
     val confidence: Float?,
     val isFinal: Boolean,
     val processingTimeMs: Long,
-    val locationData: LocationData?
+    val locationData: LocationData?,
+    val metrics: TranscriptionMetrics? = null
 )
 
 data class TranscriptionConfig(

@@ -1,7 +1,7 @@
 package com.frontieraudio.heartbeat.transcription
 
-import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.frontieraudio.heartbeat.debug.AppLogger
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.frontieraudio.heartbeat.SpeechSegment
@@ -53,8 +53,12 @@ class CartesiaWebSocketClient(
 
     private var webSocket: WebSocket? = null
     private var connectionJob: Job? = null
+
     @Volatile
     private var isConnected = false
+
+    @Volatile
+    private var isConnecting = false
 
     fun isConnected(): Boolean = isConnected
 
@@ -68,9 +72,10 @@ class CartesiaWebSocketClient(
 
     private val webSocketListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            Log.i(TAG, "WebSocket connection opened")
+            AppLogger.i(TAG, "✅ WebSocket connection opened successfully - ready to stream audio")
             isConnected = true
-            sendInitMessage()
+            isConnecting = false
+            // No init message needed - all config is in query params
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -78,27 +83,28 @@ class CartesiaWebSocketClient(
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-            Log.w(TAG, "Received unexpected binary message")
+            AppLogger.w(TAG, "Received unexpected binary message")
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-            Log.w(TAG, "WebSocket closing: $code - $reason")
+            AppLogger.w(TAG, "WebSocket closing: $code - $reason")
             isConnected = false
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            Log.e(TAG, "WebSocket closed: $code - $reason")
+            AppLogger.e(TAG, "WebSocket closed: $code - $reason")
             isConnected = false
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            Log.e(TAG, "WebSocket failure", t)
+            AppLogger.e(TAG, "❌ WebSocket failure: ${t.message}", t)
             isConnected = false
+            isConnecting = false
             connectionJob?.cancel()
             connectionJob = scope.launch {
                 delay(RECONNECT_DELAY_MS)
                 if (isActive) {
-                    Log.i(TAG, "Attempting to reconnect WebSocket...")
+                    AppLogger.i(TAG, "Attempting to reconnect WebSocket...")
                     connect()
                 }
             }
@@ -107,16 +113,26 @@ class CartesiaWebSocketClient(
 
     fun connect() {
         if (isConnected) {
-            Log.d(TAG, "Already connected")
+            AppLogger.d(TAG, "Already connected")
             return
         }
-        val urlWithAuth = "${config.cartesiaUrl}?api_key=${config.cartesiaApiKey}"
-        Log.i(TAG, "Connecting to Cartesia WebSocket at $urlWithAuth")
+        if (isConnecting) {
+            AppLogger.d(TAG, "Already connecting")
+            return
+        }
+        isConnecting = true
+        val urlWithAuth =
+            "${config.cartesiaUrl}?api_key=${config.cartesiaApiKey}&model=ink-whisper&language=${config.language}&encoding=pcm_s16le&sample_rate=16000"
+        AppLogger.i(TAG, "Connecting to Cartesia WebSocket with all params in URL and Cartesia-Version header")
+        AppLogger.i(
+            TAG,
+            "URL: ${config.cartesiaUrl}?api_key=***&model=ink-whisper&language=${config.language}&encoding=pcm_s16le&sample_rate=16000"
+        )
         val request = Request.Builder()
             .url(urlWithAuth)
-            .addHeader("Content-Type", "application/json")
             .addHeader("Cartesia-Version", "2025-04-16")
             .build()
+
         webSocket = client.newWebSocket(request, webSocketListener)
     }
 
@@ -127,66 +143,93 @@ class CartesiaWebSocketClient(
         webSocket = null
         isConnected = false
         scope.cancel()
-        Log.d(TAG, "Disconnected from Cartesia WebSocket")
+        AppLogger.d(TAG, "Disconnected from Cartesia WebSocket")
     }
 
-    private fun sendInitMessage() {
-        try {
-            val initConfig = WebSocketConfig(
-                model = "ink-whisper",
-                language = config.language
-            )
-            val initJson = objectMapper.writeValueAsString(initConfig)
-            webSocket?.send(initJson)
-            Log.i(TAG, "Sent WebSocket init message: $initJson")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error sending WebSocket init message", e)
-        }
-    }
 
     private fun handleTextMessage(text: String) {
-        Log.i(TAG, "Received WebSocket message: ${text.take(200)}...")
+        AppLogger.d(TAG, "📥 Received WebSocket message: ${text.take(200)}...")
         try {
             val response: CartesiaResponse = objectMapper.readValue(text)
-            if (response.text != null) {
-                handleTranscriptionResponse(response)
-            } else {
-                Log.w(TAG, "Received response without text: $text")
+            when (response.type) {
+                "transcript" -> {
+                    if (response.text != null) {
+                        AppLogger.d(TAG, "📝 Transcript received: '${response.text.take(50)}...'")
+                        handleTranscriptionResponse(response)
+                    } else {
+                        AppLogger.w(TAG, "⚠️ Transcript message with null text")
+                    }
+                }
+
+                "flush_done", "done" -> {
+                    AppLogger.i(TAG, "✅ Received ${response.type} acknowledgment")
+                }
+
+                "error" -> {
+                    val errorMsg = response.message ?: response.error ?: "Unknown error"
+                    val errorCode = response.code ?: 0
+                    AppLogger.e(TAG, "❌ Cartesia error ($errorCode): $errorMsg")
+                }
+
+                else -> {
+                    if (response.text != null) {
+                        AppLogger.d(TAG, "📝 Message with text (no explicit type): '${response.text.take(50)}...'")
+                        handleTranscriptionResponse(response)
+                    } else {
+                        AppLogger.w(TAG, "⚠️ Received unhandled response type '${response.type}': ${text.take(100)}")
+                    }
+                }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing Cartesia response: $text", e)
+            AppLogger.e(TAG, "Error parsing Cartesia response: $text", e)
         }
     }
 
     private fun handleTranscriptionResponse(response: CartesiaResponse) {
-        val fullText = response.segments?.joinToString(" ") { it.text } ?: response.text ?: ""
-        Log.i(TAG, "Transcription: '$fullText'")
+        val fullText = response.text ?: ""
+        val isFinal = response.is_final ?: false
+        AppLogger.i(
+            TAG,
+            "📝 Transcription [${if (isFinal) "FINAL" else "PARTIAL"}]: '$fullText' (${fullText.length} chars)"
+        )
 
         val result = TranscriptionResult(
             segment = createDummyVerifiedSegment(),
             transcript = fullText,
             confidence = null,
-            isFinal = response.is_final ?: (response.type == "final"),
+            isFinal = isFinal,
             processingTimeMs = 0,
             locationData = null
         )
         transcriptionResultsInternal.tryEmit(result)
     }
 
-    fun startTranscriptionSession() {
-        scope.launch {
-            if (!isConnected) {
-                Log.i(TAG, "Session start requested, connecting WebSocket...")
-                connect()
-            } else {
-                Log.d(TAG, "Session start requested, already connected.")
-            }
+    suspend fun startTranscriptionSession() {
+        if (isConnected) {
+            AppLogger.d(TAG, "Session start requested, already connected.")
+            return
+        }
+
+        AppLogger.i(TAG, "Session start requested, connecting WebSocket...")
+        connect()
+
+        // Wait for connection to establish (with timeout)
+        var attempts = 0
+        while (!isConnected && attempts < 50) {
+            delay(100) // Wait 100ms per attempt = 5 second max
+            attempts++
+        }
+
+        if (isConnected) {
+            AppLogger.i(TAG, "✅ WebSocket connected and ready for streaming (took ${attempts * 100}ms)")
+        } else {
+            AppLogger.e(TAG, "❌ WebSocket failed to connect after ${attempts * 100}ms timeout")
         }
     }
 
     fun streamAudioChunk(audioChunk: ShortArray) {
         if (!isConnected) {
-            Log.w(TAG, "Not connected, cannot stream audio chunk.")
+            AppLogger.w(TAG, "⚠️ Not connected, cannot stream audio chunk (${audioChunk.size} samples)")
             return
         }
         scope.launch {
@@ -197,26 +240,29 @@ class CartesiaWebSocketClient(
                     byteBuffer.putShort(sample)
                 }
                 val audioBytes = byteBuffer.array()
-                webSocket?.send(ByteString.of(*audioBytes))
-                Log.d(TAG, "Sent audio chunk: ${audioBytes.size} bytes")
+                val sent = webSocket?.send(ByteString.of(*audioBytes))
+                if (sent == true) {
+                    AppLogger.d(TAG, "✅ Sent audio chunk: ${audioBytes.size} bytes (${audioChunk.size} samples)")
+                } else {
+                    AppLogger.w(TAG, "⚠️ Failed to send audio chunk (websocket send returned false)")
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "Error streaming audio chunk", e)
+                AppLogger.e(TAG, "❌ Error streaming audio chunk", e)
             }
         }
     }
 
     fun endTranscriptionSession() {
         if (!isConnected) {
-            Log.w(TAG, "Not connected, cannot end session.")
+            AppLogger.w(TAG, "Not connected, cannot end session.")
             return
         }
         scope.launch {
             try {
-                val eosMessage = objectMapper.writeValueAsString(EndOfStream())
-                webSocket?.send(eosMessage)
-                Log.i(TAG, "Sent End-of-Stream message.")
+                webSocket?.send("finalize")
+                AppLogger.i(TAG, "Sent finalize command.")
             } catch (e: Exception) {
-                Log.e(TAG, "Error sending end-of-stream message", e)
+                AppLogger.e(TAG, "Error sending finalize command", e)
             }
         }
     }
@@ -246,14 +292,26 @@ class CartesiaWebSocketClient(
 // Data classes for JSON serialization/deserialization
 data class CartesiaResponse(
     @JsonProperty("text") val text: String?,
-    @JsonProperty("segments") val segments: List<TranscriptionSegment>?,
     @JsonProperty("type") val type: String?,
+    @JsonProperty("is_final") val is_final: Boolean?,
+    @JsonProperty("request_id") val request_id: String?,
+    @JsonProperty("error") val error: String?,
+    @JsonProperty("code") val code: Int?,
+    @JsonProperty("segments") val segments: List<TranscriptionSegment>?,
     @JsonProperty("message") val message: String?,
-    @JsonProperty("is_final") val is_final: Boolean?
+    @JsonProperty("duration") val duration: Double?,
+    @JsonProperty("words") val words: List<TranscriptionWord>?,
+    @JsonProperty("language") val language: String?
 )
 
 data class TranscriptionSegment(
     @JsonProperty("text") val text: String,
     @JsonProperty("start") val start: Float?,
     @JsonProperty("end") val end: Float?
+)
+
+data class TranscriptionWord(
+    @JsonProperty("word") val word: String,
+    @JsonProperty("start") val start: Double?,
+    @JsonProperty("end") val end: Double?
 )

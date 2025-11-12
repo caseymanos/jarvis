@@ -217,6 +217,42 @@
 
     </androidx.cardview.widget.CardView>
 
+    <!-- Metrics Display Button and ScrollView -->
+    <Button
+            android:id="@+id/metricsButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Show Metrics"
+            android:backgroundTint="#9C27B0"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/liveTranscriptCard"
+        />
+
+    <ScrollView
+            android:id="@+id/metricsScrollView"
+            android:layout_width="0dp"
+            android:layout_height="200dp"
+            android:layout_marginTop="8dp"
+            android:visibility="gone"
+            android:background="@android:color/white"
+            android:padding="12dp"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/metricsButton"
+        >
+        <TextView
+                android:id="@+id/metricsDisplayText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:fontFamily="monospace"
+                android:textIsSelectable="true"
+                android:textColor="@android:color/black"
+            />
+    </ScrollView>
+
     <Button
             android:id="@+id/openEnrollmentButton"
             android:layout_width="0dp"
@@ -373,6 +409,34 @@
             app:layout_constraintTop_toBottomOf="@id/cooldownLabel"
         />
 
+    <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/bypassVerificationSwitch"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Bypass Speaker Verification (Test Mode)"
+            android:textAppearance="?attr/textAppearanceBodyMedium"
+            android:textColor="#FF9800"
+            android:checked="false"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/cooldownSeekBar"
+        />
+
+    <TextView
+            android:id="@+id/bypassWarningText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="⚠️ When enabled, all detected speech will be transcribed without speaker verification"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="#FF5722"
+            android:visibility="gone"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/bypassVerificationSwitch"
+        />
+
     <LinearLayout
             android:id="@+id/debugButtonsLayout"
             android:layout_width="0dp"
@@ -381,29 +445,29 @@
             android:orientation="horizontal"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@id/cooldownSeekBar"
+            app:layout_constraintTop_toBottomOf="@id/bypassWarningText"
         >
-        
+
         <Button
-            android:id="@+id/debugButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
-            android:layout_weight="1"
-            android:text="Debug Transcription"
-            android:backgroundTint="#FF9800"
-        />
-        
+                android:id="@+id/debugButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:text="Debug Transcription"
+                android:backgroundTint="#FF9800"
+            />
+
         <Button
-            android:id="@+id/logViewerButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
-            android:text="View Logs"
-            android:backgroundTint="#4CAF50"
-        />
-        
+                android:id="@+id/logViewerButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="View Logs"
+                android:backgroundTint="#4CAF50"
+            />
+
     </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

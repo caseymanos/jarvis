@@ -11,6 +11,7 @@ import android.widget.Button
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.ScrollView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -47,6 +48,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cooldownValue: TextView
     private lateinit var debugButton: Button
     private lateinit var logViewerButton: Button
+    private lateinit var bypassVerificationSwitch: androidx.appcompat.widget.SwitchCompat
+    private lateinit var bypassWarningText: TextView
     private lateinit var verificationCard: CardView
     private lateinit var verificationStatusText: TextView
     private lateinit var verificationSimilarityText: TextView
@@ -60,6 +63,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var locationText: TextView
     private lateinit var liveTranscriptScrollView: ScrollView
     private lateinit var liveTranscriptText: TextView
+    private lateinit var metricsButton: Button
+    private lateinit var metricsDisplayText: TextView
+    private lateinit var metricsScrollView: ScrollView
 
     private val voiceProfileStore by lazy { (application as HeartbeatApplication).voiceProfileStore }
     private val configStore by lazy { (application as HeartbeatApplication).configStore }
@@ -84,6 +90,9 @@ class MainActivity : AppCompatActivity() {
     private val liveTranscriptLines = mutableListOf<String>()
     private val maxLiveTranscriptLines = 50
 
+    // Metrics state
+    private var metricsVisible = false
+
     private val recordAudioPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) {
@@ -103,12 +112,12 @@ class MainActivity : AppCompatActivity() {
             // Request location permissions after notification permission
             requestLocationPermissionsIfNeeded()
         }
-        
+
     private val locationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
             val fineLocationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
             val coarseLocationGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
-            
+
             if (fineLocationGranted || coarseLocationGranted) {
                 Log.d("MainActivity", "Location permissions granted")
                 updateStatusText("Location permissions granted - GPS tracking enabled")
@@ -153,20 +162,12 @@ class MainActivity : AppCompatActivity() {
         verificationDiagnosticsText.isVisible = false
         calibrationButton = findViewById(R.id.calibrationButton)
         calibrationStatusText = findViewById(R.id.calibrationStatus)
-        debugButton = Button(this).apply {
-            text = "Debug Transcription"
-            setOnClickListener {
-                startActivity(Intent(this@MainActivity, com.frontieraudio.heartbeat.debug.TranscriptionDebugActivity::class.java))
-            }
-        }
-        logViewerButton = Button(this).apply {
-            text = "View Logs"
-            setOnClickListener {
-                startActivity(Intent(this@MainActivity, com.frontieraudio.heartbeat.debug.LogViewerActivity::class.java))
-            }
-        }
+        debugButton = findViewById(R.id.debugButton)
+        logViewerButton = findViewById(R.id.logViewerButton)
+        bypassVerificationSwitch = findViewById(R.id.bypassVerificationSwitch)
+        bypassWarningText = findViewById(R.id.bypassWarningText)
         calibrationStatusText.isVisible = false
-        
+
         // Transcription UI components
         transcriptionCard = findViewById(R.id.transcriptionCard)
         transcriptionStatusText = findViewById(R.id.transcriptionStatusText)
@@ -176,6 +177,9 @@ class MainActivity : AppCompatActivity() {
         // Live transcript UI components
         liveTranscriptScrollView = findViewById(R.id.liveTranscriptScrollView)
         liveTranscriptText = findViewById(R.id.liveTranscriptText)
+        metricsButton = findViewById(R.id.metricsButton)
+        metricsDisplayText = findViewById(R.id.metricsDisplayText)
+        metricsScrollView = findViewById(R.id.metricsScrollView)
 
         updateVerificationIndicator(HeartbeatService.VerificationState(false, null, null))
     }
@@ -197,10 +201,38 @@ class MainActivity : AppCompatActivity() {
             }
         }
         debugButton.setOnClickListener {
-            startActivity(Intent(this, com.frontieraudio.heartbeat.debug.TranscriptionDebugActivity::class.java))
+            Log.d("MainActivity", "DEBUG BUTTON CLICKED")
+            Toast.makeText(this, "Opening Debug Transcription...", Toast.LENGTH_SHORT).show()
+            try {
+                startActivity(Intent(this, com.frontieraudio.heartbeat.debug.TranscriptionDebugActivity::class.java))
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Error starting TranscriptionDebugActivity", e)
+                Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                updateStatusText("Error: ${e.message}")
+            }
         }
         logViewerButton.setOnClickListener {
-            startActivity(Intent(this, com.frontieraudio.heartbeat.debug.LogViewerActivity::class.java))
+            Log.d("MainActivity", "LOG VIEWER BUTTON CLICKED")
+            Toast.makeText(this, "Opening Logs...", Toast.LENGTH_SHORT).show()
+            try {
+                startActivity(Intent(this, com.frontieraudio.heartbeat.debug.LogViewerActivity::class.java))
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Error starting LogViewerActivity", e)
+                Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                updateStatusText("Error: ${e.message}")
+            }
+        }
+        bypassVerificationSwitch.setOnCheckedChangeListener { _, isChecked ->
+            bypassWarningText.isVisible = isChecked
+            HeartbeatService.getInstance()?.setBypassVerification(isChecked)
+            if (isChecked) {
+                updateStatusText("⚠️ TEST MODE: Speaker verification bypassed")
+            } else {
+                updateStatusText("Speaker verification enabled")
+            }
+        }
+        metricsButton.setOnClickListener {
+            toggleMetricsDisplay()
         }
     }
 
@@ -269,7 +301,10 @@ class MainActivity : AppCompatActivity() {
     private fun observeStores() {
         lifecycleScope.launch {
             voiceProfileStore.voiceProfileFlow.collectLatest { profile ->
-                Log.d("MainActivity", "Received profile emission: ${if (profile != null) "loaded (${profile.samplesCaptured} samples)" else "null"}")
+                Log.d(
+                    "MainActivity",
+                    "Received profile emission: ${if (profile != null) "loaded (${profile.samplesCaptured} samples)" else "null"}"
+                )
                 profileStatusMessage = if (profile != null) {
                     val details = getString(
                         R.string.profile_enrolled_details,
@@ -341,6 +376,7 @@ class MainActivity : AppCompatActivity() {
                                     }
                                 }
                             }
+
                             service == null && activeService != null -> {
                                 stateCollector?.cancel()
                                 diagnosticsCollector?.cancel()
@@ -360,7 +396,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-    
+
     private fun observeTranscriptionResults() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -373,12 +409,15 @@ class MainActivity : AppCompatActivity() {
                             service != null && service !== activeService -> {
                                 transcriptionCollector?.cancel()
                                 activeService = service
+                                Log.d("MainActivity", "Starting transcription result collection")
                                 transcriptionCollector = launch {
                                     service.transcriptionResults().collectLatest { result ->
+                                        Log.d("MainActivity", "Collected transcription result in MainActivity")
                                         handleTranscriptionResult(result)
                                     }
                                 }
                             }
+
                             service == null && activeService != null -> {
                                 transcriptionCollector?.cancel()
                                 transcriptionCollector = null
@@ -394,27 +433,42 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-    
+
     private fun handleTranscriptionResult(result: TranscriptionResult) {
-        Log.d("MainActivity", "Received transcription: ${result.transcript}")
+        Log.d(
+            "MainActivity",
+            "Received transcription: '${result.transcript}', isFinal=${result.isFinal}, length=${result.transcript.length}"
+        )
 
-        // Update transcription result text
-        if (result.transcript.isNotBlank() && !result.transcript.startsWith("[")) {
-            transcriptionResultText.text = result.transcript
-            transcriptionResultText.isVisible = true
+        // Update status based on whether this is partial or final
+        if (result.isFinal) {
+            updateTranscriptionStatus("✅ Transcription complete")
+        } else {
+            updateTranscriptionStatus("🎤 Transcribing...")
+        }
 
+        // Update transcription result text - show ALL results for debugging
+        transcriptionResultText.isVisible = true
+
+        if (result.transcript.isNotBlank()) {
             // Show confidence if available
             val confidenceText = if (result.confidence != null) {
                 " (Confidence: ${(result.confidence * 100).toInt()}%)"
             } else {
                 ""
             }
-            transcriptionResultText.text = "${result.transcript}$confidenceText"
 
-            // Add to live transcript - this only happens for verified speech
-            addLiveTranscriptLine(result.transcript)
+            val finalIndicator = if (result.isFinal) " [FINAL]" else " [PARTIAL]"
+            transcriptionResultText.text = "${result.transcript}$confidenceText$finalIndicator"
+
+            // Add to live transcript - only for final results
+            if (result.isFinal) {
+                addLiveTranscriptLine(result.transcript)
+            }
         } else {
-            transcriptionResultText.isVisible = false
+            // Show even empty results for debugging
+            transcriptionResultText.text = "[Empty transcript received - isFinal=${result.isFinal}]"
+            Log.w("MainActivity", "Received empty transcript from Stage 3")
         }
 
         // Update location if available
@@ -424,14 +478,12 @@ class MainActivity : AppCompatActivity() {
         } ?: run {
             locationText.isVisible = false
         }
-
-        updateTranscriptionStatus("Transcription complete")
     }
-    
+
     private fun updateTranscriptionStatus(status: String) {
         transcriptionStatusText.text = status
     }
-    
+
     private fun formatLocation(location: LocationData): String {
         val lat = String.format(Locale.US, "%.6f", location.latitude)
         val lon = String.format(Locale.US, "%.6f", location.longitude)
@@ -441,6 +493,77 @@ class MainActivity : AppCompatActivity() {
             ""
         }
         return "Location: $lat°, $lon°$accuracy"
+    }
+
+    private fun toggleMetricsDisplay() {
+        metricsVisible = !metricsVisible
+        if (metricsVisible) {
+            showMetrics()
+            metricsButton.text = "Hide Metrics"
+        } else {
+            hideMetrics()
+            metricsButton.text = "Show Metrics"
+        }
+    }
+
+    private fun showMetrics() {
+        val service = HeartbeatService.getInstance()
+        if (service == null) {
+            metricsDisplayText.text = "Service not available"
+            metricsScrollView.isVisible = true
+            return
+        }
+
+        val collector = service.getMetricsCollector()
+        val metrics = collector.getCompleted()
+        val aggregate = collector.getAggregateStats()
+        val activeCount = collector.getActiveTrackingCount()
+        val activeIds = collector.getActiveSegmentIds()
+
+        val display = buildString {
+            aggregate?.let {
+                appendLine(it.formatSummary())
+                appendLine()
+                appendLine("─".repeat(40))
+                appendLine()
+            } ?: run {
+                appendLine("No metrics collected yet.")
+                appendLine("Start speaking to collect metrics!")
+                appendLine()
+                appendLine("Debug Info:")
+                appendLine("  Active tracking: $activeCount")
+                if (activeIds.isNotEmpty()) {
+                    appendLine("  Segment IDs: ${activeIds.joinToString()}")
+                    appendLine("  (Waiting for transcription to complete...)")
+                }
+                appendLine()
+                appendLine("Check logs with:")
+                appendLine("  adb logcat | grep '📊'")
+                appendLine()
+            }
+
+            if (metrics.isNotEmpty()) {
+                appendLine("=== Recent Transcriptions ===")
+                appendLine()
+                metrics.takeLast(10).reversed().forEach { m ->
+                    appendLine(m.formatSummary())
+                    appendLine("─".repeat(40))
+                    appendLine()
+                }
+            }
+        }
+
+        metricsDisplayText.text = display
+        metricsScrollView.isVisible = true
+
+        // Auto-scroll to top to see aggregate stats first
+        metricsScrollView.post {
+            metricsScrollView.scrollTo(0, 0)
+        }
+    }
+
+    private fun hideMetrics() {
+        metricsScrollView.isVisible = false
     }
 
     private fun addLiveTranscriptLine(transcript: String) {
@@ -523,23 +646,23 @@ class MainActivity : AppCompatActivity() {
         }
         postNotificationsPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
-    
+
     private fun requestLocationPermissionsIfNeeded() {
         val fineLocationGranted = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
-        
+
         val coarseLocationGranted = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
-        
+
         if (fineLocationGranted || coarseLocationGranted) {
             Log.d("MainActivity", "Location permissions already granted")
             return
         }
-        
+
         Log.d("MainActivity", "Requesting location permissions")
         locationPermissionLauncher.launch(
             arrayOf(
@@ -632,6 +755,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+
             is DiagnosticsEvent.SegmentMetrics -> {
                 if (event.source == DiagnosticsEvent.Source.VERIFICATION) {
                     val summary = getString(

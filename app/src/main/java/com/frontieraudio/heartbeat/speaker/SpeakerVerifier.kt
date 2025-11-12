@@ -13,6 +13,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.math.ceil
+import kotlin.math.max
 
 class SpeakerVerifier(context: Context) {
 
@@ -49,12 +50,24 @@ class SpeakerVerifier(context: Context) {
         segment: SpeechSegment,
         profile: VoiceProfile
     ): Pair<Float, FloatArray> = recognizerMutex.withLock {
-        Log.d(TAG, "processSegment: segment.id=${segment.id} samples=${segment.samples.size} sampleRate=${segment.sampleRateHz}")
+        val durationSeconds = segment.samples.size / segment.sampleRateHz.toDouble()
+        Log.d(
+            TAG,
+            "processSegment: segment.id=${segment.id} samples=${segment.samples.size} duration=${
+                String.format(
+                    "%.2f",
+                    durationSeconds
+                )
+            }s sampleRate=${segment.sampleRateHz}"
+        )
         val recognizer = ensureRecognizer(profile)
         Log.d(TAG, "processSegment: Eagle initialized - frameLength=$frameLength sampleRate=$sampleRateHz")
-        
+
         if (segment.sampleRateHz != sampleRateHz) {
-            Log.w(TAG, "Segment sample rate ${segment.sampleRateHz} does not match Eagle requirement $sampleRateHz; skipping segment")
+            Log.w(
+                TAG,
+                "Segment sample rate ${segment.sampleRateHz} does not match Eagle requirement $sampleRateHz; skipping segment"
+            )
             return 0f to floatArrayOf()
         }
         try {
@@ -73,7 +86,10 @@ class SpeakerVerifier(context: Context) {
         val buffer = ShortArray(localFrameLength)
         var index = 0
         var frameIndex = 0
-        val skipFrames = calculateLeadInFrameSkip(localFrameLength)
+
+        // OPTIMIZATION 1: Dynamic lead-in skip based on segment length
+        val skipFrames = calculateLeadInFrameSkip(localFrameLength, segment.samples.size)
+
         val allScores = mutableListOf<Float>()
         val scoringScores = mutableListOf<Float>()
         while (index + localFrameLength <= segment.samples.size) {
@@ -104,7 +120,9 @@ class SpeakerVerifier(context: Context) {
         if (scoringScores.isEmpty()) {
             Log.d(TAG, "processSegment: segment shorter than lead-in skip; using all frames")
         }
-        val similarity = computeTrimmedMean(usableScores)
+
+        // OPTIMIZATION 2: Improved trim logic with score flooring
+        val similarity = computeTrimmedMean(usableScores, segment.samples.size)
         Log.d(
             TAG,
             "processSegment: final similarity=$similarity (used=${usableScores.size}, totalFrames=$frameIndex)"
@@ -112,29 +130,110 @@ class SpeakerVerifier(context: Context) {
         return similarity to allScores.toFloatArray()
     }
 
-    private fun computeTrimmedMean(scores: List<Float>): Float {
+    private fun computeTrimmedMean(scores: List<Float>, totalSamples: Int): Float {
         if (scores.isEmpty()) return 0f
-        if (scores.size < MIN_TRIMMED_FRAME_COUNT) {
+        val frameCount = scores.size
+        val durationSeconds = totalSamples / sampleRateHz.toDouble()
+
+        // OPTIMIZATION 3: For very short segments, use all frames with score floor
+        if (durationSeconds < 0.8 || frameCount < 8) {
+            // Apply minimum floor to prevent zeros from washing out positive scores
+            val floored = scores.map { max(it, SCORE_FLOOR) }
+            val avg = floored.average().toFloat()
+            Log.d(
+                TAG,
+                "computeTrimmedMean: short segment - using all frames with floor (${scores.size} frames, duration=${
+                    String.format(
+                        "%.2f",
+                        durationSeconds
+                    )
+                }s)"
+            )
+            return avg
+        }
+
+        // For slightly longer segments, use minimal trimming
+        if (durationSeconds < 1.5 || frameCount < 20) {
+            val sorted = scores.sorted()
+            // Only trim 1 outlier from each end
+            val trimCount = 1
+            val trimmed = if (sorted.size > 3) {
+                sorted.drop(trimCount).dropLast(trimCount)
+            } else {
+                sorted
+            }
+            val avg = trimmed.average().toFloat()
+            Log.d(TAG, "computeTrimmedMean: medium segment - minimal trim (kept ${trimmed.size}/${sorted.size} frames)")
+            return avg
+        }
+
+        // Normal trimming logic for longer segments
+        val trimRatio = when {
+            frameCount <= NO_TRIM_FRAME_THRESHOLD -> 0f
+            frameCount <= LIGHT_TRIM_FRAME_THRESHOLD -> LIGHT_TRIM_RATIO
+            else -> TRIM_RATIO
+        }
+
+        if (trimRatio == 0f) {
             return scores.average().toFloat()
         }
+
         val sorted = scores.sorted()
-        val trimCount = (sorted.size * TRIM_RATIO).toInt().coerceAtLeast(1)
+        val trimCount = (sorted.size * trimRatio).toInt().coerceAtMost((sorted.size - 1) / 2)
+        if (trimCount <= 0) {
+            return sorted.average().toFloat()
+        }
+
         val startIndex = trimCount
         val endIndex = sorted.size - trimCount
         val trimmed = if (startIndex < endIndex) sorted.subList(startIndex, endIndex) else sorted
-        val trimmedMean = trimmed.average().toFloat()
+        val trimmedMean = trimmed.ifEmpty { sorted }.average().toFloat()
         Log.d(
             TAG,
-            "processSegment: trimmed mean kept ${trimmed.size} of ${sorted.size} frames (trim=$trimCount)"
+            "processSegment: trimmed mean kept ${trimmed.size} of ${sorted.size} frames (trim=$trimCount ratio=$trimRatio)"
         )
         return trimmedMean
     }
 
-    private fun calculateLeadInFrameSkip(frameLength: Int): Int {
+    private fun calculateLeadInFrameSkip(frameLength: Int, totalSamples: Int): Int {
         if (LEAD_IN_SKIP_MS <= 0) return 0
         if (sampleRateHz <= 0) return 0
-        val samplesToSkip = sampleRateHz * (LEAD_IN_SKIP_MS / 1000.0)
-        return ceil(samplesToSkip / frameLength.toDouble()).toInt()
+
+        val durationSeconds = totalSamples / sampleRateHz.toDouble()
+
+        // OPTIMIZATION 4: Dynamic skip based on segment length
+        val effectiveSkipMs = when {
+            durationSeconds < 0.5 -> 0         // Very short: no skip
+            durationSeconds < 1.0 -> 30        // Short: minimal skip
+            durationSeconds < 1.5 -> 50        // Medium: reduced skip
+            else -> LEAD_IN_SKIP_MS            // Normal: full skip
+        }
+
+        if (effectiveSkipMs == 0) {
+            Log.d(
+                TAG,
+                "calculateLeadInFrameSkip: very short segment (${
+                    String.format(
+                        "%.2f",
+                        durationSeconds
+                    )
+                }s) - skipping 0 frames"
+            )
+            return 0
+        }
+
+        val samplesToSkip = sampleRateHz * (effectiveSkipMs / 1000.0)
+        val skipFrames = ceil(samplesToSkip / frameLength.toDouble()).toInt()
+        Log.d(
+            TAG,
+            "calculateLeadInFrameSkip: duration=${
+                String.format(
+                    "%.2f",
+                    durationSeconds
+                )
+            }s, skip=${effectiveSkipMs}ms (${skipFrames} frames)"
+        )
+        return skipFrames
     }
 
     private suspend fun ensureRecognizer(profile: VoiceProfile): Eagle {
@@ -184,8 +283,12 @@ class SpeakerVerifier(context: Context) {
 
     companion object {
         private const val TAG = "SpeakerVerifier"
-        private const val LEAD_IN_SKIP_MS = 250
+        private const val LEAD_IN_SKIP_MS = 80
         private const val TRIM_RATIO = 0.10f
-        private const val MIN_TRIMMED_FRAME_COUNT = 8
+        private const val LIGHT_TRIM_RATIO = 0.03f
+        private const val MIN_TRIMMED_FRAME_COUNT = 4
+        private const val NO_TRIM_FRAME_THRESHOLD = 20
+        private const val LIGHT_TRIM_FRAME_THRESHOLD = 40
+        private const val SCORE_FLOOR = 0.01f  // Minimum score to prevent zero-washout
     }
 }

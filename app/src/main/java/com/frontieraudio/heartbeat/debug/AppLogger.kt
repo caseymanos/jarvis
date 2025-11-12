@@ -71,7 +71,12 @@ object AppLogger {
     }
 
     fun getRecentLogs(count: Int = 200): List<String> {
-        return logEntries.takeLast(count).map { it.toString() }
+        if (count <= 0) return emptyList()
+
+        return logEntries
+            .toList()
+            .takeLast(count)
+            .map { it.toString() }
     }
 
     fun clearLogs() {
