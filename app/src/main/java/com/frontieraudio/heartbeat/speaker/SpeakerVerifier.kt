@@ -12,6 +12,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.math.ceil
 
 class SpeakerVerifier(context: Context) {
 
@@ -48,7 +49,10 @@ class SpeakerVerifier(context: Context) {
         segment: SpeechSegment,
         profile: VoiceProfile
     ): Pair<Float, FloatArray> = recognizerMutex.withLock {
+        Log.d(TAG, "processSegment: segment.id=${segment.id} samples=${segment.samples.size} sampleRate=${segment.sampleRateHz}")
         val recognizer = ensureRecognizer(profile)
+        Log.d(TAG, "processSegment: Eagle initialized - frameLength=$frameLength sampleRate=$sampleRateHz")
+        
         if (segment.sampleRateHz != sampleRateHz) {
             Log.w(TAG, "Segment sample rate ${segment.sampleRateHz} does not match Eagle requirement $sampleRateHz; skipping segment")
             return 0f to floatArrayOf()
@@ -58,15 +62,20 @@ class SpeakerVerifier(context: Context) {
         } catch (e: EagleException) {
             Log.w(TAG, "Failed to reset Eagle recognizer", e)
         }
-        val localFrameLength = frameLength.takeIf { it > 0 } ?: return 0f to floatArrayOf()
+        val localFrameLength = frameLength.takeIf { it > 0 } ?: run {
+            Log.e(TAG, "Invalid frameLength: $frameLength")
+            return 0f to floatArrayOf()
+        }
         if (segment.samples.size < localFrameLength) {
+            Log.w(TAG, "Segment too short: ${segment.samples.size} < $localFrameLength")
             return 0f to floatArrayOf()
         }
         val buffer = ShortArray(localFrameLength)
         var index = 0
-        var framesProcessed = 0
-        var scoreSum = 0f
-        val scores = mutableListOf<Float>()
+        var frameIndex = 0
+        val skipFrames = calculateLeadInFrameSkip(localFrameLength)
+        val allScores = mutableListOf<Float>()
+        val scoringScores = mutableListOf<Float>()
         while (index + localFrameLength <= segment.samples.size) {
             segment.samples.copyInto(buffer, 0, index, index + localFrameLength)
             val frameScores = try {
@@ -76,16 +85,56 @@ class SpeakerVerifier(context: Context) {
                 break
             }
             val score = frameScores.firstOrNull() ?: 0f
-            framesProcessed++
-            scoreSum += score
-            scores.add(score)
+            allScores.add(score)
+            if (frameIndex >= skipFrames) {
+                scoringScores.add(score)
+            }
+            frameIndex++
             index += localFrameLength
         }
-        if (framesProcessed == 0) {
+        Log.d(
+            TAG,
+            "processSegment: processed $frameIndex frames (skipped first $skipFrames frames)"
+        )
+        if (frameIndex == 0) {
+            Log.w(TAG, "No frames processed")
             return 0f to floatArrayOf()
         }
-        val similarity = scoreSum / framesProcessed
-        return similarity to scores.toFloatArray()
+        val usableScores = if (scoringScores.isNotEmpty()) scoringScores else allScores
+        if (scoringScores.isEmpty()) {
+            Log.d(TAG, "processSegment: segment shorter than lead-in skip; using all frames")
+        }
+        val similarity = computeTrimmedMean(usableScores)
+        Log.d(
+            TAG,
+            "processSegment: final similarity=$similarity (used=${usableScores.size}, totalFrames=$frameIndex)"
+        )
+        return similarity to allScores.toFloatArray()
+    }
+
+    private fun computeTrimmedMean(scores: List<Float>): Float {
+        if (scores.isEmpty()) return 0f
+        if (scores.size < MIN_TRIMMED_FRAME_COUNT) {
+            return scores.average().toFloat()
+        }
+        val sorted = scores.sorted()
+        val trimCount = (sorted.size * TRIM_RATIO).toInt().coerceAtLeast(1)
+        val startIndex = trimCount
+        val endIndex = sorted.size - trimCount
+        val trimmed = if (startIndex < endIndex) sorted.subList(startIndex, endIndex) else sorted
+        val trimmedMean = trimmed.average().toFloat()
+        Log.d(
+            TAG,
+            "processSegment: trimmed mean kept ${trimmed.size} of ${sorted.size} frames (trim=$trimCount)"
+        )
+        return trimmedMean
+    }
+
+    private fun calculateLeadInFrameSkip(frameLength: Int): Int {
+        if (LEAD_IN_SKIP_MS <= 0) return 0
+        if (sampleRateHz <= 0) return 0
+        val samplesToSkip = sampleRateHz * (LEAD_IN_SKIP_MS / 1000.0)
+        return ceil(samplesToSkip / frameLength.toDouble()).toInt()
     }
 
     private suspend fun ensureRecognizer(profile: VoiceProfile): Eagle {
@@ -135,5 +184,8 @@ class SpeakerVerifier(context: Context) {
 
     companion object {
         private const val TAG = "SpeakerVerifier"
+        private const val LEAD_IN_SKIP_MS = 250
+        private const val TRIM_RATIO = 0.10f
+        private const val MIN_TRIMMED_FRAME_COUNT = 8
     }
 }

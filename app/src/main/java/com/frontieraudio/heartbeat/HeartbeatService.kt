@@ -19,6 +19,10 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.frontieraudio.heartbeat.audio.SpeechSegmentAssembler
+import com.frontieraudio.heartbeat.audio.AudioEffectUtils
+import com.frontieraudio.heartbeat.diagnostics.DiagnosticsEvent
+import com.frontieraudio.heartbeat.diagnostics.DiagnosticsEvent.Source
+import com.frontieraudio.heartbeat.diagnostics.SegmentDiagnosticsAnalyzer
 import com.frontieraudio.heartbeat.speaker.SpeakerVerificationConfig
 import com.frontieraudio.heartbeat.speaker.SpeakerVerificationConfigStore
 import com.frontieraudio.heartbeat.speaker.SpeakerVerificationResult
@@ -92,6 +96,11 @@ class HeartbeatService : Service() {
         extraBufferCapacity = 4,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
+    private val diagnosticsInternal = MutableSharedFlow<DiagnosticsEvent>(
+        replay = 1,
+        extraBufferCapacity = 8,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     private val notVerifiedState = VerificationState(isVerified = false, similarity = null, validUntilElapsedRealtimeMs = null)
     private val verificationStateInternal = MutableStateFlow(notVerifiedState)
     private var verificationJob: Job? = null
@@ -105,6 +114,8 @@ class HeartbeatService : Service() {
     private var activeVerification: ActiveVerificationState? = null
     @Volatile
     private var lastRejectAtMs: Long = 0L
+    @Volatile
+    private var lastAudioEffectsWarning: List<String>? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -151,6 +162,8 @@ class HeartbeatService : Service() {
     fun speechSegments(): SharedFlow<SpeechSegment> = speechSegmentsInternal.asSharedFlow()
 
     fun verifiedSegments(): SharedFlow<VerifiedSpeechSegment> = verifiedSegmentsInternal.asSharedFlow()
+
+    fun diagnosticsFlow(): SharedFlow<DiagnosticsEvent> = diagnosticsInternal.asSharedFlow()
 
     fun verificationStateFlow(): StateFlow<VerificationState> = verificationStateInternal.asStateFlow()
 
@@ -236,8 +249,16 @@ class HeartbeatService : Service() {
             return
         }
 
+        val metrics = SegmentDiagnosticsAnalyzer.analyze(segment)
+        logSegmentDiagnostics(segment, metrics)
+        val combinedWarnings = metrics.warnings.toMutableList()
+        var similarity: Float? = null
+        var matched: Boolean? = null
+
         when (val result = speakerVerifier.verify(segment, profile, config.matchThreshold)) {
             is SpeakerVerificationResult.Match -> {
+                similarity = result.similarity
+                matched = true
                 val validUntil = nowMs + config.positiveRetentionMillis
                 activeVerification = ActiveVerificationState(
                     similarity = result.similarity,
@@ -256,6 +277,8 @@ class HeartbeatService : Service() {
                 )
             }
             is SpeakerVerificationResult.NoMatch -> {
+                similarity = result.similarity
+                matched = false
                 activeVerification = null
                 lastRejectAtMs = nowMs
                 verificationStateInternal.value = notVerifiedState
@@ -265,18 +288,22 @@ class HeartbeatService : Service() {
                 )
             }
             is SpeakerVerificationResult.NotEnrolled -> {
+                combinedWarnings.add("Profile missing during verification")
                 activeVerification = null
                 lastRejectAtMs = nowMs
                 verificationStateInternal.value = notVerifiedState
                 Log.w(TAG, "Stage2 reported not enrolled; dropping segment ${segment.id}")
             }
             is SpeakerVerificationResult.Error -> {
+                combinedWarnings.add("Verification error: ${result.throwable?.javaClass?.simpleName ?: "unknown"}")
                 activeVerification = null
                 lastRejectAtMs = nowMs
                 verificationStateInternal.value = notVerifiedState
                 Log.e(TAG, "Stage2 error for segment ${segment.id}", result.throwable)
             }
         }
+
+        emitSegmentDiagnostics(segment, metrics, similarity, matched, combinedWarnings)
     }
 
     private suspend fun emitVerifiedSegment(segment: SpeechSegment, similarity: Float, scores: FloatArray) {
@@ -287,6 +314,67 @@ class HeartbeatService : Service() {
                 scores = scores,
                 verifiedAtMillis = System.currentTimeMillis()
             )
+        )
+    }
+
+    private fun logSegmentDiagnostics(segment: SpeechSegment, metrics: SegmentDiagnosticsAnalyzer.Metrics) {
+        val warnings = if (metrics.warnings.isEmpty()) "none" else metrics.warnings.joinToString()
+        Log.i(
+            TAG,
+            String.format(
+                Locale.US,
+                "Stage2 diagnostics id=%d rms=%.1f dBFS peak=%.1f dBFS clipping=%.1f%% speech=%.0f%% warnings=%s",
+                segment.id,
+                metrics.rmsDbfs,
+                metrics.peakDbfs,
+                metrics.clippingRatio * 100f,
+                metrics.speechRatio * 100f,
+                warnings
+            )
+        )
+    }
+
+    private fun emitSegmentDiagnostics(
+        segment: SpeechSegment,
+        metrics: SegmentDiagnosticsAnalyzer.Metrics,
+        similarity: Float?,
+        matched: Boolean?,
+        warnings: List<String>
+    ) {
+        diagnosticsInternal.tryEmit(
+            DiagnosticsEvent.SegmentMetrics(
+                source = Source.VERIFICATION,
+                segmentId = segment.id,
+                durationMs = segment.durationMillis,
+                rmsDbfs = metrics.rmsDbfs,
+                clippingRatio = metrics.clippingRatio,
+                speechRatio = metrics.speechRatio,
+                similarity = similarity,
+                matched = matched,
+                warnings = warnings
+            )
+        )
+    }
+
+    private fun detectAudioEffects(record: AudioRecord) {
+        val activeEffects = AudioEffectUtils.detectEnabledEffects(record)
+        if (activeEffects.isEmpty()) {
+            if (!lastAudioEffectsWarning.isNullOrEmpty()) {
+                lastAudioEffectsWarning = null
+                diagnosticsInternal.tryEmit(
+                    DiagnosticsEvent.AudioEffectsWarning(Source.VERIFICATION, emptyList())
+                )
+            }
+            return
+        }
+        if (lastAudioEffectsWarning == activeEffects) {
+            return
+        }
+        lastAudioEffectsWarning = activeEffects.toList()
+        val formatted = activeEffects.joinToString()
+        Log.w(TAG, "Detected device audio effects enabled: $formatted")
+        diagnosticsInternal.tryEmit(
+            DiagnosticsEvent.AudioEffectsWarning(Source.VERIFICATION, activeEffects)
         )
     }
 
@@ -372,6 +460,8 @@ class HeartbeatService : Service() {
             record.release()
             throw IllegalStateException("AudioRecord failed to initialize")
         }
+
+        detectAudioEffects(record)
 
         val vadInstance = Vad.builder()
             .setContext(applicationContext)
@@ -510,7 +600,7 @@ class HeartbeatService : Service() {
         private const val SPEECH_DURATION_MS = 80
         private const val SILENCE_DURATION_MS = 300
         private const val PRE_ROLL_DURATION_MS = 240
-        private const val MIN_SEGMENT_DURATION_MS = 900  // Match enrollment requirements for consistent quality
+        private const val MIN_SEGMENT_DURATION_MS = 2000  // Match enrollment requirements for consistent quality
         private const val RESTART_BACKOFF_INITIAL_MS = 1_000L
         private const val RESTART_BACKOFF_MAX_MS = 8_000L
 

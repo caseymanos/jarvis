@@ -15,11 +15,14 @@ import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresPermission
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import com.frontieraudio.heartbeat.BuildConfig
 import com.frontieraudio.heartbeat.R
+import com.frontieraudio.heartbeat.audio.AudioEffectUtils
 import com.frontieraudio.heartbeat.audio.SpeechSegmentAssembler
 import com.frontieraudio.heartbeat.speaker.VoiceProfile
 import com.frontieraudio.heartbeat.speaker.VoiceProfileStore
@@ -35,6 +38,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -44,6 +48,9 @@ class EnrollmentActivity : AppCompatActivity() {
     private lateinit var promptText: TextView
     private lateinit var progressText: TextView
     private lateinit var progressBar: ProgressBar
+    private lateinit var voicedTimeText: TextView
+    private lateinit var warningText: TextView
+    private lateinit var tipText: TextView
     private lateinit var primaryButton: Button
     private lateinit var cancelButton: Button
 
@@ -52,6 +59,7 @@ class EnrollmentActivity : AppCompatActivity() {
     private var recordingJob: Job? = null
     private var samplesCaptured = 0
     private var latestProgressPercent: Float = 0f
+    private var audioEffectsWarningShown = false
     @Volatile
     private var completionRequested = false
 
@@ -75,11 +83,15 @@ class EnrollmentActivity : AppCompatActivity() {
         promptText = findViewById(R.id.enrollmentPrompt)
         progressText = findViewById(R.id.enrollmentProgressText)
         progressBar = findViewById(R.id.enrollmentProgressBar)
+        voicedTimeText = findViewById(R.id.enrollmentVoicedTime)
+        warningText = findViewById(R.id.enrollmentWarning)
+        tipText = findViewById(R.id.enrollmentTip)
         primaryButton = findViewById(R.id.enrollmentPrimaryButton)
         cancelButton = findViewById(R.id.enrollmentCancelButton)
 
         progressBar.max = 100
         progressBar.progress = 0
+        updateVoicedTime()
 
         primaryButton.setOnClickListener {
             if (recordingJob?.isActive == true) {
@@ -126,11 +138,18 @@ class EnrollmentActivity : AppCompatActivity() {
         samplesCaptured = 0
         latestProgressPercent = 0f
         completionRequested = false
+        audioEffectsWarningShown = false
         statusText.text = getString(R.string.enrollment_listening_status)
+        warningText.isVisible = false
+        warningText.text = ""
+        tipText.isVisible = false
+        updateVoicedTime()
         setRecordingUi(true)
         updateProgress(0f)
 
-        recordingJob = lifecycleScope.launch(Dispatchers.IO) {
+        recordingJob = lifecycleScope.launch(Dispatchers.IO) @androidx.annotation.RequiresPermission(
+            android.Manifest.permission.RECORD_AUDIO
+        ) {
             val profiler = try {
                 EagleProfiler.Builder()
                     .setAccessKey(accessKey)
@@ -148,6 +167,7 @@ class EnrollmentActivity : AppCompatActivity() {
             val sampleRate = SampleRate.SAMPLE_RATE_16K
             val frameSize = FrameSize.FRAME_SIZE_512
             val audioRecord = createAudioRecord(sampleRate, frameSize)
+            maybeWarnAboutAudioEffects(audioRecord)
             val vad = createVad(sampleRate, frameSize)
             val frameBuffer = ShortArray(frameSize.value)
             val assembler = SpeechSegmentAssembler(
@@ -169,6 +189,7 @@ class EnrollmentActivity : AppCompatActivity() {
                     }
                     
                     withContext(Dispatchers.Main) {
+                        updateVoicedTime()
                         handleEnrollProgress(result.percentage, result.feedback, isGoodQuality)
                     }
                 } catch (e: EagleException) {
@@ -223,9 +244,10 @@ class EnrollmentActivity : AppCompatActivity() {
                 Log.d(TAG, "Resources cleaned up, checking enrollment completion")
 
                 val percentSnapshot = latestProgressPercent
-                Log.d(TAG, "Final enrollment percentage: $percentSnapshot%")
+                val voicedSecondsSnapshot = getVoicedSeconds()
+                Log.d(TAG, "Final enrollment percentage: $percentSnapshot% (voiced ${"%.1f".format(voicedSecondsSnapshot)}s)")
                 
-                if (percentSnapshot >= 99.5f) {
+                if (percentSnapshot >= 99.5f && voicedSecondsSnapshot + VOICED_TIME_TOLERANCE_S >= MIN_TOTAL_VOICED_SECONDS) {
                     Log.d(TAG, "Enrollment complete, starting export process")
                     // Export on IO thread (this is blocking and can take time)
                     // We're already on IO dispatcher, so just call it directly
@@ -235,9 +257,19 @@ class EnrollmentActivity : AppCompatActivity() {
                         finalizeEnrollment(exportedProfile)
                     }
                 } else {
-                    Log.d(TAG, "Enrollment incomplete ($percentSnapshot%), not exporting")
+                    Log.d(TAG, "Enrollment incomplete (progress=$percentSnapshot%, voiced=${"%.1f".format(voicedSecondsSnapshot)}s), not exporting")
                     withContext(NonCancellable + Dispatchers.Main) {
-                        statusText.text = getString(R.string.enrollment_incomplete)
+                        val errorText = if (voicedSecondsSnapshot + VOICED_TIME_TOLERANCE_S < MIN_TOTAL_VOICED_SECONDS) {
+                            val remaining = (MIN_TOTAL_VOICED_SECONDS - voicedSecondsSnapshot)
+                                .coerceAtLeast(0f)
+                            getString(
+                                R.string.enrollment_need_more_time,
+                                ceil(remaining.toDouble()).toFloat()
+                            )
+                        } else {
+                            getString(R.string.enrollment_incomplete)
+                        }
+                        statusText.text = errorText
                         setRecordingUi(false)
                         primaryButton.isEnabled = true
                         cancelButton.isEnabled = true
@@ -267,6 +299,7 @@ class EnrollmentActivity : AppCompatActivity() {
         statusText.text = getString(R.string.enrollment_complete)
         promptText.text = getString(R.string.enrollment_complete_prompt)
         updateProgress(100f)
+        tipText.isVisible = false
         setRecordingUi(false)
         primaryButton.text = getString(R.string.enrollment_restart)
         primaryButton.isEnabled = true
@@ -317,6 +350,7 @@ class EnrollmentActivity : AppCompatActivity() {
     private fun stopRecording() {
         recordingJob?.cancel()
         setRecordingUi(false)
+        tipText.isVisible = false
         primaryButton.isEnabled = true
         cancelButton.isEnabled = true
     }
@@ -347,16 +381,27 @@ class EnrollmentActivity : AppCompatActivity() {
         
         // Show warning indicator for poor quality
         val prefix = if (wasAccepted) "" else "⚠️ "
+        val voicedSeconds = getVoicedSeconds()
         statusText.text = getString(R.string.enrollment_progress_status, prefix + statusMessage, percentage.toInt())
+        updateFeedbackTip(feedback, wasAccepted)
         
         if (!completionRequested && percentage >= 99.5f) {
-            completionRequested = true
-            Log.d(TAG, "Enrollment reached 100%, stopping recording to begin export...")
-            // Show exporting message immediately so user sees feedback
-            statusText.text = getString(R.string.enrollment_processing)
-            primaryButton.isEnabled = false
-            cancelButton.isEnabled = false
-            recordingJob?.cancel()
+            if (voicedSeconds + VOICED_TIME_TOLERANCE_S >= MIN_TOTAL_VOICED_SECONDS) {
+                completionRequested = true
+                Log.d(TAG, "Enrollment reached 100%, stopping recording to begin export...")
+                // Show exporting message immediately so user sees feedback
+                statusText.text = getString(R.string.enrollment_processing)
+                primaryButton.isEnabled = false
+                cancelButton.isEnabled = false
+                recordingJob?.cancel()
+            } else {
+                val remaining = (MIN_TOTAL_VOICED_SECONDS - voicedSeconds)
+                    .coerceAtLeast(0f)
+                statusText.text = getString(
+                    R.string.enrollment_need_more_time,
+                    ceil(remaining.toDouble()).toFloat()
+                )
+            }
         }
     }
 
@@ -367,12 +412,61 @@ class EnrollmentActivity : AppCompatActivity() {
         progressText.text = getString(R.string.enrollment_progress_percent, rounded)
     }
 
+    private suspend fun maybeWarnAboutAudioEffects(audioRecord: AudioRecord) {
+        if (audioEffectsWarningShown) return
+        val effects = AudioEffectUtils.detectEnabledEffects(audioRecord)
+        if (effects.isEmpty()) return
+        audioEffectsWarningShown = true
+        Log.w(TAG, "Detected device audio effects active during enrollment: ${effects.joinToString()}")
+        withContext(Dispatchers.Main) {
+            warningText.isVisible = true
+            warningText.text = getString(
+                R.string.enrollment_warning_audio_effects,
+                effects.joinToString()
+            )
+        }
+    }
+
+    private fun updateVoicedTime() {
+        val voicedSeconds = getVoicedSeconds()
+        voicedTimeText.text = getString(
+            R.string.enrollment_voiced_time,
+            voicedSeconds,
+            MIN_TOTAL_VOICED_SECONDS
+        )
+    }
+
+    private fun updateFeedbackTip(
+        feedback: EagleProfilerEnrollFeedback,
+        wasAccepted: Boolean
+    ) {
+        val tipRes = when (feedback) {
+            EagleProfilerEnrollFeedback.AUDIO_OK -> null
+            EagleProfilerEnrollFeedback.AUDIO_TOO_SHORT -> R.string.enrollment_tip_audio_too_short
+            EagleProfilerEnrollFeedback.NO_VOICE_FOUND -> R.string.enrollment_tip_no_voice
+            EagleProfilerEnrollFeedback.QUALITY_ISSUE -> R.string.enrollment_tip_quality_issue
+            EagleProfilerEnrollFeedback.UNKNOWN_SPEAKER -> R.string.enrollment_tip_unknown_speaker
+        }
+
+        if (!wasAccepted && tipRes != null) {
+            tipText.isVisible = true
+            tipText.text = getString(tipRes)
+        } else {
+            tipText.isVisible = false
+        }
+    }
+
+    private fun getVoicedSeconds(): Float {
+        return samplesCaptured.toFloat() / SAMPLE_RATE_HZ
+    }
+
     private fun requireAccessKey(): String {
         val accessKey = BuildConfig.PICOVOICE_ACCESS_KEY
         require(accessKey.isNotBlank())
         return accessKey
     }
 
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     private fun createAudioRecord(sampleRate: SampleRate, frameSize: FrameSize): AudioRecord {
         val minBuffer = AudioRecord.getMinBufferSize(
             sampleRate.value,
@@ -410,6 +504,10 @@ class EnrollmentActivity : AppCompatActivity() {
         private const val VAD_SPEECH_MS = 60
         private const val VAD_SILENCE_MS = 200
         private const val BYTES_PER_SAMPLE = 2
+        private const val SAMPLE_RATE_HZ = 16_000f
+        private const val MIN_TOTAL_VOICED_SECONDS = 18f
+        private const val VOICED_TIME_TOLERANCE_S = 0.1f
+    }
     }
 
     private fun EagleException.toDetailedString(): String {
