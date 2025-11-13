@@ -20,6 +20,9 @@ import androidx.cardview.widget.CardView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.frontieraudio.heartbeat.audio.AudioSourceInfo
+import com.frontieraudio.heartbeat.audio.AudioSourceManager
+import com.frontieraudio.heartbeat.audio.AudioSourceType
 import com.frontieraudio.heartbeat.diagnostics.DiagnosticsEvent
 import com.frontieraudio.heartbeat.location.LocationData
 import com.frontieraudio.heartbeat.speaker.SpeakerVerificationConfig
@@ -66,6 +69,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var metricsButton: Button
     private lateinit var metricsDisplayText: TextView
     private lateinit var metricsScrollView: ScrollView
+    private lateinit var historyButton: Button
+    
+    // Audio source components
+    private lateinit var audioSourceManager: AudioSourceManager
+    private lateinit var audioSourceStatusText: TextView
+    private lateinit var audioSourceButton: Button
 
     private val voiceProfileStore by lazy { (application as HeartbeatApplication).voiceProfileStore }
     private val configStore by lazy { (application as HeartbeatApplication).configStore }
@@ -121,6 +130,8 @@ class MainActivity : AppCompatActivity() {
             if (fineLocationGranted || coarseLocationGranted) {
                 Log.d("MainActivity", "Location permissions granted")
                 updateStatusText("Location permissions granted - GPS tracking enabled")
+                // Request Bluetooth permissions after location permissions are granted
+                requestBluetoothPermissionsIfNeeded()
             } else {
                 Log.w("MainActivity", "Location permissions denied")
                 updateStatusText("Location permissions denied - GPS tracking disabled")
@@ -142,6 +153,10 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         ensurePermissionThenStart()
+        
+        // Update audio source UI in case system state changed
+        audioSourceManager.updateCurrentSourceFromSystemState()
+        updateAudioSourceUI(audioSourceManager.getCurrentAudioSource())
     }
 
     private fun bindViews() {
@@ -173,13 +188,19 @@ class MainActivity : AppCompatActivity() {
         transcriptionStatusText = findViewById(R.id.transcriptionStatusText)
         transcriptionResultText = findViewById(R.id.transcriptionResultText)
         locationText = findViewById(R.id.locationText)
-
+        
+        // Audio source UI components
+        audioSourceStatusText = findViewById(R.id.audioSourceStatusText)
+        audioSourceButton = findViewById(R.id.audioSourceButton)
+        audioSourceManager = AudioSourceManager(this)
+        
         // Live transcript UI components
         liveTranscriptScrollView = findViewById(R.id.liveTranscriptScrollView)
         liveTranscriptText = findViewById(R.id.liveTranscriptText)
         metricsButton = findViewById(R.id.metricsButton)
         metricsDisplayText = findViewById(R.id.metricsDisplayText)
         metricsScrollView = findViewById(R.id.metricsScrollView)
+        historyButton = findViewById(R.id.historyButton)
 
         updateVerificationIndicator(HeartbeatService.VerificationState(false, null, null))
     }
@@ -232,7 +253,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
         metricsButton.setOnClickListener {
-            toggleMetricsDisplay()
+            startActivity(Intent(this, com.frontieraudio.heartbeat.metrics.MetricsActivity::class.java))
+        }
+        
+        historyButton.setOnClickListener {
+            startActivity(Intent(this, com.frontieraudio.heartbeat.transcription.TranscriptionHistoryActivity::class.java))
+        }
+        
+        audioSourceButton.setOnClickListener {
+            toggleAudioSource()
         }
     }
 
@@ -505,6 +534,55 @@ class MainActivity : AppCompatActivity() {
             metricsButton.text = "Show Metrics"
         }
     }
+    
+    private fun toggleAudioSource() {
+        val currentSource = audioSourceManager.getCurrentAudioSource()
+        val availableSources = audioSourceManager.getAvailableSources()
+        
+        // Find next available source in cycle: Device → Bluetooth → (back to Device)
+        val nextSourceType = when (currentSource.type) {
+            AudioSourceType.DEVICE_MICROPHONE -> {
+                if (availableSources.any { it.type == AudioSourceType.BLUETOOTH_MICROPHONE }) {
+                    AudioSourceType.BLUETOOTH_MICROPHONE
+                } else {
+                    AudioSourceType.DEVICE_MICROPHONE
+                }
+            }
+            AudioSourceType.BLUETOOTH_MICROPHONE -> {
+                AudioSourceType.DEVICE_MICROPHONE
+            }
+            AudioSourceType.WIRED_HEADSET -> {
+                AudioSourceType.DEVICE_MICROPHONE
+            }
+        }
+        
+        val success = audioSourceManager.switchToSource(nextSourceType)
+        if (success) {
+            val newSource = audioSourceManager.getCurrentAudioSource()
+            updateAudioSourceUI(newSource)
+            
+            // Notify HeartbeatService of audio source change
+            HeartbeatService.instanceRef?.get()?.notifyAudioSourceChanged()
+        } else {
+            Toast.makeText(this, "Failed to switch to ${nextSourceType.name.replace("_", " ").lowercase().replaceFirstChar { it.uppercase() }}", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    private fun updateAudioSourceUI(sourceInfo: AudioSourceInfo) {
+        audioSourceStatusText.text = "Current: ${sourceInfo.displayName}"
+        
+        when (sourceInfo.type) {
+            AudioSourceType.DEVICE_MICROPHONE -> {
+                audioSourceButton.text = "Switch to Bluetooth Microphone"
+            }
+            AudioSourceType.BLUETOOTH_MICROPHONE -> {
+                audioSourceButton.text = "Switch to Device Microphone"
+            }
+            AudioSourceType.WIRED_HEADSET -> {
+                audioSourceButton.text = "Switch to Device Microphone"
+            }
+        }
+    }
 
     private fun showMetrics() {
         val service = HeartbeatService.getInstance()
@@ -660,6 +738,9 @@ class MainActivity : AppCompatActivity() {
 
         if (fineLocationGranted || coarseLocationGranted) {
             Log.d("MainActivity", "Location permissions already granted")
+            updateStatusText("Location permissions granted - GPS tracking enabled")
+            // Request Bluetooth permissions after location permissions
+            requestBluetoothPermissionsIfNeeded()
             return
         }
 
@@ -668,6 +749,49 @@ class MainActivity : AppCompatActivity() {
             arrayOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        )
+    }
+    
+    private fun requestBluetoothPermissionsIfNeeded() {
+        val bluetoothGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.BLUETOOTH
+        ) == PackageManager.PERMISSION_GRANTED
+        val bluetoothAdminGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.BLUETOOTH_ADMIN
+        ) == PackageManager.PERMISSION_GRANTED
+        val modifyAudioGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.MODIFY_AUDIO_SETTINGS
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        if (bluetoothGranted && bluetoothAdminGranted && modifyAudioGranted) {
+            Log.d("MainActivity", "Bluetooth permissions already granted")
+            updateStatusText("All permissions granted - Audio source selection available")
+            return
+        }
+        
+        val bluetoothPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            val allGranted = permissions.values.all { it }
+            if (allGranted) {
+                Log.d("MainActivity", "Bluetooth permissions granted")
+                updateStatusText("All permissions granted - Audio source selection available")
+                // Update audio source UI after permissions granted
+                audioSourceManager.updateCurrentSourceFromSystemState()
+                updateAudioSourceUI(audioSourceManager.getCurrentAudioSource())
+            } else {
+                Log.w("MainActivity", "Some Bluetooth permissions denied")
+                updateStatusText("Some Bluetooth permissions denied - Limited audio source options")
+            }
+        }
+        
+        bluetoothPermissionLauncher.launch(
+            arrayOf(
+                Manifest.permission.BLUETOOTH,
+                Manifest.permission.BLUETOOTH_ADMIN,
+                Manifest.permission.MODIFY_AUDIO_SETTINGS
             )
         )
     }

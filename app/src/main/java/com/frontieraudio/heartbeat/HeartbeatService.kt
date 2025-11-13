@@ -36,6 +36,7 @@ import com.frontieraudio.heartbeat.transcription.CartesiaWebSocketClient
 import com.frontieraudio.heartbeat.transcription.TranscriptionConfig
 import com.frontieraudio.heartbeat.transcription.TranscriptionConfigStore
 import com.frontieraudio.heartbeat.transcription.TranscriptionResult
+import com.frontieraudio.heartbeat.transcription.TranscriptionManager
 import com.frontieraudio.heartbeat.metrics.MetricsCollector
 import com.konovalov.vad.silero.Vad
 import com.konovalov.vad.silero.VadSilero
@@ -126,6 +127,7 @@ class HeartbeatService : Service() {
 
     // Metrics collection
     private val metricsCollector = MetricsCollector()
+    private lateinit var transcriptionManager: TranscriptionManager
 
     // State machine for streaming transcription
     private enum class TranscriptionState { IDLE, VERIFYING, STREAMING }
@@ -163,6 +165,7 @@ class HeartbeatService : Service() {
     override fun onCreate() {
         super.onCreate()
         instanceRef = WeakReference(this)
+        transcriptionManager = TranscriptionManager(this)
         createNotificationChannel()
         enableAppTracing()
         startVerificationPipeline()
@@ -211,6 +214,17 @@ class HeartbeatService : Service() {
     fun transcriptionResults(): SharedFlow<TranscriptionResult> = transcriptionResultsInternal.asSharedFlow()
     fun getCurrentLocation(): LocationData? = currentLocation
     fun getMetricsCollector(): MetricsCollector = metricsCollector
+    
+    fun getTranscriptionManager(): TranscriptionManager = transcriptionManager
+    
+    fun notifyAudioSourceChanged() {
+        serviceScope.launch {
+            AppLogger.i(TAG, "Audio source change notification received, restarting audio pipeline")
+            stopAudioPipeline()
+            delay(1000) // Allow time for audio routing to settle
+            startAudioPipeline()
+        }
+    }
 
     fun verificationState(): VerificationState {
         val now = SystemClock.elapsedRealtime()
@@ -782,24 +796,44 @@ class HeartbeatService : Service() {
     }
 
     private suspend fun handleTranscriptionResult(result: TranscriptionResult) {
-        val truncated = if (result.transcript.length > 50) {
-            "${result.transcript.take(50)}..."
+        // Add current location data to the transcription result
+        val resultWithLocation = result.copy(locationData = currentLocation)
+        
+        val truncated = if (resultWithLocation.transcript.length > 50) {
+            "${resultWithLocation.transcript.take(50)}..."
         } else {
-            result.transcript
+            resultWithLocation.transcript
         }
         AppLogger.i(
             TAG,
-            "📝 Stage 3 transcription result: '${truncated}' [${if (result.isFinal) "FINAL" else "PARTIAL"}] (${result.transcript.length} chars)"
+            "📝 Stage 3 transcription result: '${truncated}' [${if (resultWithLocation.isFinal) "FINAL" else "PARTIAL"}] (${resultWithLocation.transcript.length} chars)"
         )
 
         // Track transcription metrics using current streaming segment ID
         if (currentStreamingSegmentId != -1L) {
-            if (!result.isFinal && result.transcript.isNotBlank()) {
+            if (!resultWithLocation.isFinal && resultWithLocation.transcript.isNotBlank()) {
                 // Mark first partial
                 metricsCollector.markFirstPartial(currentStreamingSegmentId)
-            } else if (result.isFinal && result.transcript.isNotBlank()) {
+            } else if (resultWithLocation.isFinal && resultWithLocation.transcript.isNotBlank()) {
                 // Mark final transcript
-                metricsCollector.markFinalTranscript(currentStreamingSegmentId, result.transcript)
+                metricsCollector.markFinalTranscript(currentStreamingSegmentId, resultWithLocation.transcript)
+                
+                // Save transcription with GPS data to storage (PER ENDGOAL REQUIREMENT)
+                serviceScope.launch {
+                    try {
+                        transcriptionManager.saveTranscription(
+                            transcript = resultWithLocation.transcript,
+                            confidence = resultWithLocation.confidence,
+                            locationData = resultWithLocation.locationData,
+                            timestamp = System.currentTimeMillis(),
+                            isVerified = resultWithLocation.segment.similarity >= 0.5f,
+                            verificationSimilarity = resultWithLocation.segment.similarity
+                        )
+                    } catch (e: Exception) {
+                        AppLogger.e(TAG, "Failed to save transcription to storage", e)
+                    }
+                }
+                
                 // Reset after final transcript
                 currentStreamingSegmentId = -1
             }
@@ -807,7 +841,7 @@ class HeartbeatService : Service() {
             AppLogger.w(TAG, "Received transcription but no segment ID tracked for metrics")
         }
 
-        transcriptionResultsInternal.emit(result)
+        transcriptionResultsInternal.emit(resultWithLocation)
         AppLogger.d(TAG, "Transcription result emitted to MainActivity")
     }
 
@@ -844,7 +878,7 @@ class HeartbeatService : Service() {
         private const val RESTART_BACKOFF_MAX_MS = 8_000L
 
         @Volatile
-        private var instanceRef: WeakReference<HeartbeatService>? = null
+        var instanceRef: WeakReference<HeartbeatService>? = null
 
         fun start(context: Context) {
             val intent = Intent(context, HeartbeatService::class.java)

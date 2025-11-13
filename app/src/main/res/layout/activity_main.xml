@@ -217,7 +217,7 @@
 
     </androidx.cardview.widget.CardView>
 
-    <!-- Metrics Display Button and ScrollView -->
+    <!-- Metrics Display Button -->
     <Button
             android:id="@+id/metricsButton"
             android:layout_width="0dp"
@@ -228,6 +228,19 @@
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@id/liveTranscriptCard"
+        />
+
+    <!-- Transcription History Button -->
+    <Button
+            android:id="@+id/historyButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="📍 Transcription History"
+            android:backgroundTint="#2196F3"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/metricsButton"
         />
 
     <ScrollView
@@ -437,6 +450,59 @@
             app:layout_constraintTop_toBottomOf="@id/bypassVerificationSwitch"
         />
 
+    <!-- Audio Source Selection -->
+    <androidx.cardview.widget.CardView
+            android:id="@+id/audioSourceCard"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardCornerRadius="12dp"
+            app:cardUseCompatPadding="true"
+            app:cardBackgroundColor="@android:color/white"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/bypassWarningText"
+        >
+
+        <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp"
+            >
+
+            <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Audio Source"
+                    android:textAppearance="?attr/textAppearanceBodyMedium"
+                    android:textColor="@android:color/black"
+                    android:fontFamily="sans-serif-medium"
+                />
+
+            <TextView
+                    android:id="@+id/audioSourceStatusText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="Current: Device Microphone"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:textColor="#666666"
+                />
+
+            <Button
+                    android:id="@+id/audioSourceButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="Switch to Bluetooth Microphone"
+                    android:backgroundTint="#2196F3"
+                />
+
+        </LinearLayout>
+
+    </androidx.cardview.widget.CardView>
+
     <LinearLayout
             android:id="@+id/debugButtonsLayout"
             android:layout_width="0dp"
@@ -445,7 +511,7 @@
             android:orientation="horizontal"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@id/bypassWarningText"
+            app:layout_constraintTop_toBottomOf="@id/audioSourceCard"
         >
 
         <Button
