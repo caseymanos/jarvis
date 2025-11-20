@@ -36,3 +36,37 @@ release/
 .DS_Store
 Thumbs.db
 
+
+# Logs
+logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+# Dependency directories
+node_modules/
+# Environment variables - NEVER EXPOSE API KEYS
+.env
+.env.*
+.env.local
+.env.production
+.env.development
+*.env
+
+# Task Master configuration (may contain API keys)
+.taskmaster/.env
+.taskmaster/config.json
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific
+
+# Task files
+# tasks.json
+# tasks/ 

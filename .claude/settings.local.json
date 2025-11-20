@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(tm models)",
+      "Bash(tm models:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
