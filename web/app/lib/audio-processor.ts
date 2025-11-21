@@ -23,7 +23,7 @@ export class AudioProcessor {
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = 2048;
 
-      await this.audioContext.audioWorklet.addModule('/audio-worklet-processor.js');
+      await this.audioContext.audioWorklet.addModule('/api/audio-worklet-processor.js');
 
       this.workletNode = new AudioWorkletNode(this.audioContext, 'audio-processor');
 

@@ -23,6 +23,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     signIn: "/auth/signin",
     // signUp: "/auth/signup", // Not a valid NextAuth page option
   },
+  trustHost: true,
   providers: [
     CredentialsProvider({
       name: "credentials",
