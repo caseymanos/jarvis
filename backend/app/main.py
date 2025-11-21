@@ -12,8 +12,19 @@ from app.services.temporal_client import get_temporal_service
 from app.services.health_monitor import get_health_monitor
 from app.services.presence import get_presence_service
 from app.services.session_state import session_state_service
+from app.services.speech_to_text import get_stt_service, shutdown_stt_service
+from app.services.llm_service import get_llm_service, shutdown_llm_service
+from app.services.text_to_speech import get_tts_service, shutdown_tts_service
+from app.services.hybrid_retriever import HybridRetriever
+from app.models.document import SearchQuery
 
 settings = get_settings()
+
+# Global retriever instance
+hybrid_retriever = HybridRetriever()
+
+# Audio buffer for accumulating chunks per session
+audio_buffers = {}
 
 
 @asynccontextmanager
@@ -22,6 +33,9 @@ async def lifespan(app: FastAPI):
     # Startup
     # Initialize database tables
     await init_db()
+
+    # Initialize retriever
+    hybrid_retriever.initialize()
 
     redis_service = get_redis_service()
     await redis_service.connect()
@@ -44,6 +58,9 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     await health_monitor.stop_monitoring()
+    await shutdown_tts_service()
+    await shutdown_llm_service()
+    await shutdown_stt_service()
     await temporal_service.disconnect()
     await session_state_service.disconnect()
     await presence_service.disconnect()
@@ -318,19 +335,174 @@ async def disconnect(sid):
 
 @sio.event
 async def audio(sid, data):
-    """Handle incoming audio data."""
-    print(f"Received audio from {sid}: {len(data)} bytes")
+    """Handle incoming audio data - accumulate chunks."""
+    global audio_buffers
+
+    # Initialize buffer for this session if needed
+    if sid not in audio_buffers:
+        audio_buffers[sid] = bytearray()
+
+    # Accumulate audio chunks
+    audio_buffers[sid].extend(data)
+
+    # Only log occasionally to avoid spam
+    if len(audio_buffers[sid]) % 10000 < len(data):
+        print(f"Buffering audio from {sid}: {len(audio_buffers[sid])} bytes total")
+
+    # Update agent state to listening (only first time)
+    if len(audio_buffers[sid]) == len(data):
+        redis_service = get_redis_service()
+        await redis_service.publish_agent_state_update(
+            session_id=sid,
+            state="listening",
+            metadata={"recording": True}
+        )
+
+
+async def process_accumulated_audio(sid):
+    """Process accumulated audio when user stops recording."""
+    global audio_buffers
+
+    if sid not in audio_buffers or len(audio_buffers[sid]) == 0:
+        print(f"No audio to process for {sid}")
+        return
+
+    audio_data = bytes(audio_buffers[sid])
+    print(f"Processing {len(audio_data)} bytes of audio for {sid}")
+
+    # Clear buffer
+    audio_buffers[sid] = bytearray()
+
     redis_service = get_redis_service()
+    stt_service = get_stt_service()
 
-    # Update agent state to listening
-    await redis_service.publish_agent_state_update(
-        session_id=sid,
-        state="listening",
-        metadata={"audio_bytes": len(data)}
-    )
+    try:
+        # Step 1: Transcribe audio using Whisper
+        transcription_result = await stt_service.transcribe_audio(
+            audio_data=audio_data,
+            session_id=sid
+        )
 
-    # TODO: Process audio, transcribe, run retrieval, generate response
-    # For now, just acknowledge receipt
+        transcribed_text = transcription_result["text"]
+        print(f"Transcription for {sid}: {transcribed_text}")
+
+        # Broadcast transcript update to client
+        await sio.emit('transcript', {
+            'speaker': 'user',
+            'text': transcribed_text,
+            'timestamp': datetime.utcnow().isoformat(),
+            'language': transcription_result.get('language', 'en')
+        }, room=sid)
+
+        # Publish to Redis stream
+        await redis_service.publish_transcript_update(
+            session_id=sid,
+            transcript_chunk={
+                'speaker': 'user',
+                'text': transcribed_text,
+                'timestamp': datetime.utcnow().isoformat()
+            }
+        )
+
+        # Update agent state to thinking (processing)
+        await redis_service.publish_agent_state_update(
+            session_id=sid,
+            state="thinking",
+            metadata={"query": transcribed_text}
+        )
+
+        # Step 2: Run document retrieval using RAG
+        search_query = SearchQuery(
+            query=transcribed_text,
+            top_k=settings.rerank_top_k
+        )
+        retrieval_response = hybrid_retriever.search(search_query)
+
+        print(f"Retrieved {retrieval_response.total_results} documents in {retrieval_response.retrieval_time_ms:.2f}ms")
+
+        # Format retrieved documents for LLM context
+        retrieved_context = "\n\n".join([
+            f"[{result.source}] {result.title}\n{result.content}"
+            for result in retrieval_response.results
+        ])
+
+        # Step 3: Generate LLM response using retrieved context
+        llm_service = get_llm_service()
+        llm_response = await llm_service.generate_response(
+            user_query=transcribed_text,
+            retrieved_context=retrieved_context,
+            session_id=sid,
+            conversation_history=None  # TODO: Implement conversation history tracking
+        )
+
+        response_text = llm_response["text"]
+        print(f"LLM response for {sid}: {response_text[:100]}... (tokens: {llm_response.get('tokens_used', 'N/A')})")
+
+        # Emit text response first for display
+        await sio.emit('response', {
+            'text': response_text,
+            'sources': [
+                {
+                    'title': result.title,
+                    'source': result.source,
+                    'score': result.score
+                }
+                for result in retrieval_response.results
+            ],
+            'model': llm_response['model'],
+            'timestamp': datetime.utcnow().isoformat()
+        }, room=sid)
+
+        # Update agent state to speaking
+        await redis_service.publish_agent_state_update(
+            session_id=sid,
+            state="speaking",
+            metadata={"response_length": len(response_text)}
+        )
+
+        # Step 4 & 5: Convert response to speech and stream audio back to client
+        tts_service = get_tts_service()
+        audio_chunks_sent = 0
+
+        async for audio_chunk in tts_service.synthesize_speech(
+            text=response_text,
+            session_id=sid,
+            stream=True
+        ):
+            # Stream audio chunks via WebSocket
+            await sio.emit('audio_response', audio_chunk, room=sid)
+            audio_chunks_sent += 1
+
+        print(f"Streamed {audio_chunks_sent} audio chunks for session {sid}")
+
+        # Publish transcript for assistant response
+        await redis_service.publish_transcript_update(
+            session_id=sid,
+            transcript_chunk={
+                'speaker': 'agent',
+                'text': response_text,
+                'timestamp': datetime.utcnow().isoformat()
+            }
+        )
+
+        # Reset to idle state
+        await redis_service.publish_agent_state_update(
+            session_id=sid,
+            state="idle"
+        )
+
+    except Exception as e:
+        print(f"Error processing audio for {sid}: {str(e)}")
+        await sio.emit('error', {
+            'message': 'Failed to process audio',
+            'detail': str(e)
+        }, room=sid)
+
+        # Reset to idle on error
+        await redis_service.publish_agent_state_update(
+            session_id=sid,
+            state="idle"
+        )
 
 
 @sio.event
@@ -350,10 +522,17 @@ async def control(sid, data):
     # Update agent state based on action
     if action == "start":
         await redis_service.publish_agent_state_update(sid, "listening")
+        # Clear any existing buffer
+        global audio_buffers
+        audio_buffers[sid] = bytearray()
     elif action == "stop":
-        await redis_service.publish_agent_state_update(sid, "idle")
+        # Process accumulated audio
+        await process_accumulated_audio(sid)
     elif action == "interrupt":
         await redis_service.publish_agent_state_update(sid, "idle")
+        # Clear buffer on interrupt
+        if sid in audio_buffers:
+            audio_buffers[sid] = bytearray()
 
 
 @sio.event
@@ -390,6 +569,13 @@ async def join_session(sid, data):
     user_id = data.get('user_id')
     display_name = data.get('display_name')
     role = data.get('role', 'operator')
+
+    # Validate required parameters
+    if not session_id or not user_id:
+        await sio.emit('error', {
+            'message': 'Missing session_id or user_id'
+        }, room=sid)
+        return
 
     # Join Socket.IO room for session
     await sio.enter_room(sid, session_id)
@@ -491,7 +677,11 @@ async def cursor_move(sid, data):
     x = data.get('x', 0.0)
     y = data.get('y', 0.0)
 
-    # Update cursor position
+    # Silently ignore if session_id or user_id missing
+    if not session_id or not user_id:
+        return
+
+    # Update cursor position (may return None if user hasn't joined session yet)
     presence = await presence_service.update_cursor(session_id, user_id, x, y)
 
     if presence:
