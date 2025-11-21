@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jarvis-config
+  namespace: jarvis
+data:
+  temporal-host: "temporal.jarvis.svc.cluster.local:7233"
+  log-level: "INFO"
+  max-workers: "4"
