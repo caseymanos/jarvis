@@ -33,7 +33,7 @@ class VoiceSession(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(String, nullable=False, index=True)
     is_active = Column(Boolean, default=True, nullable=False)
-    metadata = Column(JSON, default=dict)
+    session_metadata = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -65,7 +65,7 @@ class TranscriptChunk(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     is_deleted = Column(Boolean, default=False, nullable=False, index=True)
     deleted_at = Column(DateTime, nullable=True)
-    metadata = Column(JSON, default=dict)
+    chunk_metadata = Column(JSON, default=dict)
 
     # Relationships
     session = relationship("VoiceSession", back_populates="transcripts")
@@ -87,7 +87,7 @@ class SessionSnapshot(Base):
     session_id = Column(String, ForeignKey("voice_sessions.id"), nullable=False, index=True)
     agent_state = Column(String, nullable=False)  # idle/listening/thinking/speaking
     transcript_count = Column(Integer, default=0, nullable=False)
-    metadata = Column(JSON, default=dict)
+    snapshot_metadata = Column(JSON, default=dict)
     device_ids = Column(JSON, default=list)  # List of connected device IDs
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 

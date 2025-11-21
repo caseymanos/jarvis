@@ -115,15 +115,21 @@ class PresenceService:
             call_sign=call_sign,
             role=role,
             color=color,
+            cursor_x=0.0,
+            cursor_y=0.0,
             last_active=datetime.utcnow().isoformat(),
-            socket_id=socket_id
+            socket_id=socket_id or ""
         )
 
         # Store in Redis
         presence_key = f"{self.PRESENCE_KEY_PREFIX}:{session_id}"
         user_key = f"{presence_key}:{user_id}"
 
-        await self.redis.hset(user_key, mapping=asdict(presence))
+        # Convert to dict and ensure all values are strings for Redis
+        presence_dict = asdict(presence)
+        presence_dict = {k: str(v) if v is not None else "" for k, v in presence_dict.items()}
+
+        await self.redis.hset(user_key, mapping=presence_dict)
         await self.redis.expire(user_key, self.PRESENCE_TTL)
 
         # Add to session index
@@ -204,7 +210,7 @@ class PresenceService:
 
         # Retrieve full presence data
         user_data = await self.redis.hgetall(user_key)
-        if not user_data:
+        if not user_data or "user_id" not in user_data:
             return None
 
         return UserPresence(
