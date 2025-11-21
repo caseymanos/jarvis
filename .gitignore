@@ -67,6 +67,8 @@ node_modules/
 *.sw?
 # OS specific
 
+# Environment variables
+
 # Task files
 # tasks.json
 # tasks/ 

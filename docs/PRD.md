@@ -305,7 +305,7 @@
 - Couchbase Lite on Android/iOS + Sync Gateway for offline edge mirrors
 - sqlite-vec on-device cache (int8 quantized) for hottest procedures
 - Redis Streams for presence + event fan-out
-- Gemini 1.5/Claude 3 Sonnet as guarded LLMs with strict grounding contract
+- Grok 3 as the guarded primary LLM, backed by strict grounding contract and local GGUF fallback
 
 **Pros:**
 
@@ -435,7 +435,7 @@
 
 1. **Single-region deployment:** All compute lives in us-west-2 (future multi-region failover).
 2. **Edge cache size cap:** sqlite-vec cache limited to ~1 GB per device (rotate hottest docs daily).
-3. **LLM dependency:** Gemini/Claude availability directly impacts response SLA (evaluate open models later).
+3. **LLM dependency:** Grok 3 availability directly impacts response SLA (evaluate open models later or add additional providers).
 4. **No multilingual:** English-only transcripts until ASR swap scheduled.
 5. **Manual ingestion:** Docs ingested via CLI, no self-serve uploader yet.
 6. **Supervisor UI web-only:** No native tablet experience until Phase 2.
@@ -520,4 +520,4 @@
 **Mitigation:** Local sqlite-vec + Couchbase Lite queue storing transcripts until sync; explicit offline banners.
 
 **Fourth Risk:** Latency spikes from LLM provider outages.  
-**Mitigation:** Multi-provider router (Gemini + Claude + local GGUF) with health probes; degrade gracefully to cached answers.
+**Mitigation:** Multi-provider router (Grok 3 primary + local GGUF) with health probes; degrade gracefully to cached answers.

@@ -60,7 +60,7 @@ graph TB
         Couchbase[(Couchbase Server\nSync Gateway)]
         Redis[(Redis Streams/Upstash\npresence, pub/sub)]
         ObjectStore[(S3 + Lance format\ndocuments)]
-        LLMRouter[LLM Router\nGemini/Claude/local GGUF]
+        LLMRouter[LLM Router\nGrok 3/local GGUF]
     end
 
     subgraph "Testing Infrastructure"
@@ -275,7 +275,7 @@ Operations: transactional inserts via FastAPI, logical replication to analytics 
 
 - **Embeddings**: `text-embedding-3-large` (cloud) + MiniLM (edge) with quantization for sqlite-vec.
 - **Reranker**: `cross-encoder/ms-marco-MiniLM-L-12-v2` distilled + quantized to int8 for device use.
-- **LLM Router**: Sequencing Gemini 1.5 Pro, Claude 3.5 Sonnet, fallback to local GGUF via llama.cpp for resilience.
+- **LLM Router**: Primary Grok 3 completions with fallback to local GGUF via llama.cpp for resilience.
 
 ---
 
