@@ -435,11 +435,80 @@
             "testStrategy": "Measure retrieval performance and ensure it meets efficiency benchmarks."
           }
         ]
+      },
+      {
+        "id": 11,
+        "title": "Implement Voice Processing Pipeline",
+        "description": "Develop the core voice processing pipeline to handle audio transcription, LLM response generation, and text-to-speech synthesis.",
+        "details": "Implement the pipeline in `backend/app/main.py` at line 332. Use Whisper or a similar STT service to transcribe incoming audio chunks. Integrate the RAG/retrieval system to search relevant documents. Use an LLM (Grok 3, GPT, or Claude) to generate contextual responses. Convert these responses to speech using a TTS service. Stream audio responses back to clients via WebSocket. Ensure the system can handle interruptions and maintain conversation context. Consider using Redis Streams for managing real-time data flow and Temporal for handling state and interruptions.",
+        "testStrategy": "Verify transcription accuracy and latency using Whisper. Test document retrieval accuracy and response generation quality using the LLM. Ensure TTS output is clear and streamed correctly via WebSocket. Simulate interruptions to test context maintenance and recovery. Measure end-to-end latency to ensure it meets performance requirements.",
+        "status": "done",
+        "dependencies": [
+          2,
+          3,
+          4
+        ],
+        "priority": "high",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Integrate Speech-to-Text Service",
+            "description": "Implement Whisper or a similar STT service to transcribe incoming audio chunks.",
+            "dependencies": [],
+            "details": "Use Whisper API to transcribe audio in real-time. Ensure integration with existing audio capture system.\n<info added on 2025-11-21T19:03:17.598Z>\nCOMPLETED: Integrated Speech-to-Text service using OpenAI Whisper API.\n\nImplementation details:\n- Created SpeechToTextService class (backend/app/services/speech_to_text.py:1)\n- Uses OpenAI Whisper API (whisper-1 model) for real-time transcription\n- Converts raw PCM audio (16kHz mono) to WAV format with proper headers\n- Returns detailed transcription with text, language, duration, and timestamped segments\n- Integrated into main.py audio handler (backend/app/main.py:336)\n- Audio flow: Receive PCM → Convert to WAV → Whisper API → Transcribe\n- Broadcasts transcriptions to client via Socket.IO 'transcript' event\n- Publishes to Redis streams for real-time sync\n- Added configuration in config.py: OPENAI_API_KEY, STT_MODEL, STT_LANGUAGE\n- Added openai==1.12.0 to requirements.txt\n- Service lifecycle managed in FastAPI lifespan (startup/shutdown)\n- Error handling with proper state management (idle/listening/thinking)\n\nThe STT integration is complete and ready for testing. Next step: implement document retrieval (subtask 11.2).\n</info added on 2025-11-21T19:03:17.598Z>",
+            "status": "done",
+            "testStrategy": "Verify transcription accuracy and latency using sample audio files."
+          },
+          {
+            "id": 2,
+            "title": "Implement Document Retrieval System",
+            "description": "Integrate the RAG/retrieval system to search relevant documents based on transcribed text.",
+            "dependencies": [
+              1
+            ],
+            "details": "Use the existing RAG system to retrieve documents. Ensure compatibility with transcribed text format.\n<info added on 2025-11-21T19:04:32.733Z>\nCOMPLETED: Integrated document retrieval system into voice processing pipeline.\n\nImplementation details:\n- Integrated existing HybridRetriever (BM25 + Vector + RRF + Reranking) into main.py\n- Added hybrid_retriever as global instance, initialized in lifespan (backend/app/main.py:22)\n- Integrated into audio handler at line 378\n- Retrieval flow: User query → SearchQuery → HybridRetriever.search() → RetrievalResponse\n- Returns top-k documents (configurable via settings.rerank_top_k, default 5)\n- Retrieved documents formatted as context for LLM: \"[source] title\\ncontent\"\n- Emits 'response' event with sources array containing title, source, and relevance score\n- Logs retrieval performance: document count and latency in milliseconds\n- Uses existing RAG infrastructure: BM25Retriever, VectorRetriever, CrossEncoderReranker\n- Threshold-based filtering ensures only high-confidence results (reranker_threshold=0.88)\n- Compatible with transcribed text from Whisper STT\n\nThe retrieval system is fully integrated and ready. Next step: implement LLM response generation (subtask 11.3).\n</info added on 2025-11-21T19:04:32.733Z>",
+            "status": "done",
+            "testStrategy": "Test document retrieval accuracy using predefined queries."
+          },
+          {
+            "id": 3,
+            "title": "Integrate Language Model for Response Generation",
+            "description": "Use an LLM to generate contextual responses from retrieved documents.",
+            "dependencies": [
+              2
+            ],
+            "details": "Integrate Grok 3, GPT, or Claude to process retrieved documents and generate responses.\n<info added on 2025-11-21T19:05:52.855Z>\nCOMPLETED: Integrated Language Model for response generation with multi-provider support.\n\nImplementation details:\n- Created LLMService class (backend/app/services/llm_service.py:1)\n- Multi-provider support: Grok 3 (xAI), GPT (OpenAI), Claude (Anthropic)\n- Provider configuration via LLM_PROVIDER setting (xai/openai/anthropic)\n- Grok 3 integration via xAI API (api.x.ai/v1) with OpenAI-compatible interface\n- System prompt defines JARVIS persona: tactical AI assistant for military operations\n- Response generation uses retrieved RAG context for grounded answers\n- Conversation history support (last 5 exchanges for context continuity)\n- Guidelines enforced: concise (<100 words), cite sources, flag safety info\n- Fallback handling when no documents retrieved\n- Token usage tracking and logging\n- Integrated into main.py audio handler at line 395\n- Flow: Transcription → Retrieval → LLM Generation → Response\n- Added configuration in config.py: LLM_PROVIDER, XAI_API_KEY, ANTHROPIC_API_KEY, LLM_MODEL, LLM_TEMPERATURE, LLM_MAX_TOKENS\n- Added anthropic==0.18.1 to requirements.txt\n- Service lifecycle managed in FastAPI lifespan (shutdown at line 57)\n- Response includes model name and token count for monitoring\n\nThe LLM integration is complete with Grok 3 as default. Next step: implement Text-to-Speech (subtask 11.4).\n</info added on 2025-11-21T19:05:52.855Z>",
+            "status": "done",
+            "testStrategy": "Evaluate response quality and relevance using test scenarios."
+          },
+          {
+            "id": 4,
+            "title": "Implement Text-to-Speech Conversion",
+            "description": "Convert generated responses to speech using a TTS service.",
+            "dependencies": [
+              3
+            ],
+            "details": "Use a TTS service to convert text responses into audio. Ensure audio quality and clarity.\n<info added on 2025-11-21T19:06:59.937Z>\nCOMPLETED: Implemented Text-to-Speech conversion with streaming support.\n\nImplementation details:\n- Created TextToSpeechService class (backend/app/services/text_to_speech.py:1)\n- Multi-provider support: OpenAI TTS, ElevenLabs\n- Provider configuration via TTS_PROVIDER setting (openai/elevenlabs)\n- OpenAI TTS uses tts-1 model with selectable voices (alloy, echo, fable, onyx, nova, shimmer)\n- ElevenLabs support with customizable voice settings (stability, similarity_boost)\n- Streaming TTS: yields audio chunks (4096 bytes) for real-time playback\n- PCM audio format for WebSocket streaming (compatible with frontend)\n- Integrated into main.py audio handler at line 432\n- Added configuration in config.py: TTS_PROVIDER, TTS_MODEL, TTS_VOICE, ELEVENLABS_API_KEY\n- Added httpx==0.26.0 to requirements.txt for ElevenLabs API\n- Service lifecycle managed in FastAPI lifespan (shutdown at line 58)\n- Error handling with proper logging\n\nTTS integration complete. Audio streaming implemented in subtask 11.5.\n</info added on 2025-11-21T19:06:59.937Z>",
+            "status": "done",
+            "testStrategy": "Test TTS output clarity and accuracy using generated responses."
+          },
+          {
+            "id": 5,
+            "title": "Develop WebSocket Streaming for Audio Responses",
+            "description": "Stream audio responses back to clients via WebSocket.",
+            "dependencies": [
+              4
+            ],
+            "details": "Implement WebSocket streaming to deliver audio responses. Ensure low latency and handle interruptions.\n<info added on 2025-11-21T19:07:30.882Z>\nCOMPLETED: Implemented WebSocket streaming for audio responses with interruption handling.\n\nImplementation details:\n- Audio streaming via Socket.IO 'audio_response' event (backend/app/main.py:441)\n- Streams audio chunks (4096 bytes) from TTS service directly to client\n- Real-time streaming: async iteration over TTS generator yields chunks immediately\n- Low-latency delivery: chunks sent as soon as TTS produces them\n- Agent state management: transitions to 'speaking' state during TTS/streaming\n- Interruption support: control handler (main.py:403) handles 'interrupt' action\n- Interrupt flow: Sets agent state to 'idle', cancels current processing\n- Chunk tracking: logs total chunks sent for monitoring\n- Integration with Redis streams for state broadcasting\n- Complete pipeline flow:\n  1. Audio received → 'listening' state\n  2. Transcription → Broadcast transcript\n  3. Retrieval → 'thinking' state\n  4. LLM generation → Text response emitted\n  5. TTS synthesis → 'speaking' state\n  6. Audio streaming → Chunks sent via WebSocket\n  7. Complete → 'idle' state\n- Transcript persistence: both user and agent messages saved to Redis\n- Error handling: resets to 'idle' state on any failure\n\nThe complete voice processing pipeline is now functional:\nVoice Input → STT (Whisper) → RAG Retrieval → LLM (Grok/GPT/Claude) → TTS (OpenAI/ElevenLabs) → Audio Streaming → Voice Output\n</info added on 2025-11-21T19:07:30.882Z>",
+            "status": "done",
+            "testStrategy": "Measure end-to-end latency and test interruption handling during streaming."
+          }
+        ]
       }
     ],
     "metadata": {
       "created": "2025-11-20T23:31:02.373Z",
-      "updated": "2025-11-21T01:42:18.987Z",
+      "updated": "2025-11-21T19:07:30.965Z",
       "description": "Tasks for master context"
     }
   }

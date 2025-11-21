@@ -26,7 +26,17 @@
       "Bash(docker push:*)",
       "Bash(export PATH=\"/opt/homebrew/bin:$PATH\")",
       "Bash(aws ecs update-service:*)",
-      "Bash(aws ecs describe-services:*)"
+      "Bash(aws ecs describe-services:*)",
+      "Bash(docker-compose down:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(docker compose:*)",
+      "Bash(export PATH=\"/Applications/Docker.app/Contents/Resources/bin:/opt/homebrew/bin:/usr/bin:$PATH\")",
+      "Bash(curl:*)",
+      "mcp__task-master-ai__add_task",
+      "Bash(python:*)",
+      "Bash(cat:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
