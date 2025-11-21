@@ -1,0 +1,32 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: jarvis-cluster
+  region: us-east-2
+  version: "1.28"
+
+# Public-only VPC to avoid NAT gateway limits
+vpc:
+  cidr: 192.168.0.0/16
+  nat:
+    gateway: Disable
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: true
+
+# Fargate profiles
+fargateProfiles:
+  - name: jarvis-backend
+    selectors:
+      - namespace: jarvis
+  - name: kube-system
+    selectors:
+      - namespace: kube-system
+
+# Add-ons
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: metrics-server

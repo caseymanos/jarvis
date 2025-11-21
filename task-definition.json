@@ -1,0 +1,79 @@
+{
+  "family": "jarvis-backend-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::971422717446:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "jarvis-backend",
+      "image": "971422717446.dkr.ecr.us-east-2.amazonaws.com/jarvis-backend:latest",
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "PORT",
+          "value": "8000"
+        },
+        {
+          "name": "ENV",
+          "value": "production"
+        },
+        {
+          "name": "HOST",
+          "value": "0.0.0.0"
+        },
+        {
+          "name": "DATABASE_URL",
+          "value": "postgresql://jarvisadmin:JarvisDB2024Secure@jarvis-db.c1uuigcm4bd1.us-east-2.rds.amazonaws.com:5432/jarvis"
+        },
+        {
+          "name": "REDIS_URL",
+          "value": "redis://jarvis-redis.wda3jc.0001.use2.cache.amazonaws.com:6379"
+        },
+        {
+          "name": "EMBEDDING_MODEL",
+          "value": "sentence-transformers/all-MiniLM-L6-v2"
+        },
+        {
+          "name": "RERANKER_MODEL",
+          "value": "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        },
+        {
+          "name": "RERANKER_THRESHOLD",
+          "value": "0.88"
+        },
+        {
+          "name": "BM25_TOP_K",
+          "value": "20"
+        },
+        {
+          "name": "VECTOR_TOP_K",
+          "value": "20"
+        },
+        {
+          "name": "RERANK_TOP_K",
+          "value": "5"
+        },
+        {
+          "name": "REDIS_STREAM_MAXLEN",
+          "value": "1000"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/jarvis-backend",
+          "awslogs-region": "us-east-2",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

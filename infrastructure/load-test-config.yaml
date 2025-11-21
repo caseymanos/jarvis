@@ -1,0 +1,35 @@
+# K6 Load Testing Configuration for Jarvis Backend
+# Target: 200 RPS with 50+ concurrent sessions
+
+scenarios:
+  voice_sessions:
+    executor: constant-vus
+    vus: 50
+    duration: 5m
+
+  api_load:
+    executor: constant-arrival-rate
+    rate: 200
+    timeUnit: 1s
+    duration: 5m
+    preAllocatedVUs: 100
+    maxVUs: 200
+
+thresholds:
+  http_req_duration:
+    - p(95) < 500  # 95% of requests should complete in under 500ms
+    - p(99) < 1000 # 99% of requests should complete in under 1s
+  http_req_failed:
+    - rate < 0.01  # Error rate should be less than 1%
+  websocket_duration:
+    - p(95) < 200  # 95% of WebSocket messages should have <200ms latency
+
+stages:
+  - duration: 1m
+    target: 10  # Ramp up to 10 concurrent users
+  - duration: 2m
+    target: 50  # Sustain 50 concurrent sessions
+  - duration: 1m
+    target: 100 # Spike to 100 concurrent sessions
+  - duration: 1m
+    target: 50  # Back to 50
