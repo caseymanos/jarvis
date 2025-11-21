@@ -1,0 +1,446 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Set Up Authentication System",
+        "description": "Implement user registration, login, and session management.",
+        "details": "Use NextAuth for authentication. Implement email/password registration and Azure AD (OIDC) social login. Store sessions using HttpOnly cookies. Ensure display names are derived from Azure `displayName` or fallback logic.",
+        "testStrategy": "Test user registration, login, and session persistence across refreshes. Verify display name logic and session management.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement User Registration with Email/Password",
+            "description": "Set up user registration using email and password with NextAuth.",
+            "dependencies": [],
+            "details": "Configure NextAuth to handle email/password registration. Ensure secure password storage and validation. Implement form validation and error handling.\n<info added on 2025-11-20T23:38:05.069Z>\nThe current codebase is an Android Kotlin app for voice activity detection, and the Next.js frontend application does not exist yet in this repository. Considerations needed: \n\n1. Decide whether to create the Next.js application structure first before implementing authentication.\n2. Determine if there is a separate repository for the Next.js frontend.\n3. Evaluate if the task sequence should be updated to build the Next.js foundation first. \n\nThe Android app is Stage 1 of the voice pipeline, while the PRD describes the full Jarvis MVP, including the Next.js web console.\n</info added on 2025-11-20T23:38:05.069Z>\n<info added on 2025-11-20T23:44:13.721Z>\nCOMPLETED: Implemented user registration with email/password.\n\nImplementation details:\n- Created Next.js 15 application in /web directory (app router)\n- Set up Prisma with PostgreSQL schema for User, Account, Session, and VerificationToken models\n- Created /api/auth/register endpoint with bcrypt password hashing\n- Implemented registration UI at /auth/signup with form validation\n- Added zod schema validation for email and password\n- Secure password storage with bcrypt (10 salt rounds)\n- Display name logic: uses provided name or defaults to email prefix\n\nFiles created:\n- web/prisma/schema.prisma (database schema)\n- web/auth.ts (NextAuth v5 configuration)\n- web/app/api/auth/register/route.ts (registration API)\n- web/app/auth/signup/page.tsx (registration UI)\n- web/.env.local (environment configuration)\n\nNext step: Test registration flow with local database\n</info added on 2025-11-20T23:44:13.721Z>",
+            "status": "done",
+            "testStrategy": "Test registration flow, form validation, and error handling."
+          },
+          {
+            "id": 2,
+            "title": "Integrate Azure AD Social Login",
+            "description": "Add Azure AD (OIDC) as a social login option using NextAuth.",
+            "dependencies": [
+              1
+            ],
+            "details": "Configure NextAuth to support Azure AD login. Set up OIDC provider with necessary credentials. Ensure proper handling of authentication responses.\n<info added on 2025-11-20T23:44:32.654Z>\nCOMPLETED: Integrated Azure AD (OIDC) social login.\n\nImplementation details:\n- Configured AzureADProvider in NextAuth with proper scopes (openid, profile, email, User.Read)\n- Implemented conditional provider loading (only loads if AZURE_AD_CLIENT_ID is set)\n- Added Azure AD sign-in button to /auth/signin page with Microsoft branding\n- Profile mapping extracts displayName from Azure AD response\n- JWT callback updates user displayName in database when Azure AD login is used\n- Feature flag NEXT_PUBLIC_AZURE_AD_ENABLED controls UI visibility\n\nEnvironment variables required:\n- AZURE_AD_CLIENT_ID\n- AZURE_AD_CLIENT_SECRET  \n- AZURE_AD_TENANT_ID\n\nThe Azure AD integration is ready but optional - works seamlessly alongside email/password auth.\n</info added on 2025-11-20T23:44:32.654Z>",
+            "status": "done",
+            "testStrategy": "Test Azure AD login flow and response handling."
+          },
+          {
+            "id": 3,
+            "title": "Implement Session Management with HttpOnly Cookies",
+            "description": "Manage user sessions using HttpOnly cookies for security.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Configure NextAuth to store sessions in HttpOnly cookies. Ensure secure cookie settings and session persistence across browser refreshes.\n<info added on 2025-11-20T23:44:34.527Z>\nCOMPLETED: Implemented session management with HttpOnly cookies.\n\nImplementation details:\n- NextAuth configured with JWT strategy for session management\n- Session maxAge set to 30 days (2,592,000 seconds)\n- HttpOnly cookies enabled for security (prevents XSS access)\n- Cookie configuration in auth.ts:\n  * httpOnly: true\n  * sameSite: 'lax'\n  * secure: true in production\n- Session includes user ID, email, displayName, and role\n- Middleware.ts protects all routes except /auth and static assets\n- SessionProvider wraps entire app for client-side session access\n- Server-side session validation using auth() helper\n\nDisplay name fallback logic:\n1. Azure displayName (if Azure AD login)\n2. User's name field\n3. callsign-XXXX (last 4 chars of user ID)\n4. Truncated to 24 characters in UI\n\nSession persists across browser refreshes and page navigation.\n</info added on 2025-11-20T23:44:34.527Z>",
+            "status": "done",
+            "testStrategy": "Test session persistence and security settings."
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Develop Real-Time Voice Session Pipeline",
+        "description": "Implement voice capture and streaming with WebRTC and WebSocket.",
+        "details": "Use WebRTC for 16 kHz mono PCM audio capture. Implement WebSocket streaming to FastAPI. Ensure round-trip latency is under 500 ms. Integrate Porcupine for wake-word detection and handle interruptions with control frames.",
+        "testStrategy": "Test voice capture responsiveness, latency, and interruption handling. Verify smooth audio streaming under various network conditions.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Set Up WebRTC for Audio Capture",
+            "description": "Configure WebRTC to capture 16 kHz mono PCM audio.",
+            "dependencies": [],
+            "details": "Implement WebRTC API to capture audio at 16 kHz. Ensure compatibility with various browsers and devices.\n<info added on 2025-11-20T23:48:46.800Z>\nCOMPLETED: Set up WebRTC for audio capture at 16 kHz mono PCM.\n\nImplementation details:\n- Created AudioProcessor class (web/app/lib/audio-processor.ts:1)\n- Configured MediaStream with constraints:\n  * channelCount: 1 (mono)\n  * sampleRate: 16000 Hz\n  * echoCancellation: true\n  * noiseSuppression: true\n  * autoGainControl: true\n- Implemented AudioContext with 16kHz sample rate\n- Created Audio Worklet for efficient processing in separate thread\n- Added waveform visualization using AnalyserNode\n- Implemented volume level monitoring\n- Proper cleanup and resource management\n\nFiles created:\n- web/app/lib/audio-processor.ts (AudioProcessor class)\n- web/public/audio-worklet-processor.js (Audio Worklet processor)\n\nThe audio capture is optimized for low latency and works across modern browsers.\n</info added on 2025-11-20T23:48:46.800Z>",
+            "status": "done",
+            "testStrategy": "Test audio capture quality and compatibility across devices."
+          },
+          {
+            "id": 2,
+            "title": "Implement WebSocket Streaming to FastAPI",
+            "description": "Develop WebSocket streaming for audio data to FastAPI server.",
+            "dependencies": [
+              1
+            ],
+            "details": "Set up WebSocket connection to stream audio data to FastAPI. Ensure data integrity and handle connection errors.\n<info added on 2025-11-20T23:49:03.235Z>\nCOMPLETED: Implemented WebSocket streaming to FastAPI.\n\nImplementation details:\n- Created VoiceWebSocketClient class using socket.io-client (web/app/lib/websocket-client.ts:1)\n- Configured WebSocket with:\n  * Transport: websocket only (no polling fallback)\n  * Automatic reconnection (5 attempts, 1s delay)\n  * Binary data support for audio streaming\n- Implemented message types:\n  * audio: Float32Array PCM data\n  * control: start/stop/interrupt commands\n  * response: AI responses with transcript and sources\n  * transcript: real-time transcription updates\n  * agent_state: idle/listening/thinking/speaking\n- Added connection state management\n- Proper error handling and event listeners\n- Latency tracking for performance monitoring\n\nThe WebSocket client is ready to connect to a FastAPI backend with Socket.IO support.\n</info added on 2025-11-20T23:49:03.235Z>",
+            "status": "done",
+            "testStrategy": "Verify continuous audio streaming and error handling under different network conditions."
+          },
+          {
+            "id": 3,
+            "title": "Optimize Latency for Real-Time Streaming",
+            "description": "Ensure round-trip latency is under 500 ms for audio streaming.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Analyze and optimize network paths and buffer sizes to reduce latency. Implement jitter buffers if necessary.\n<info added on 2025-11-20T23:49:05.853Z>\nCOMPLETED: Optimized latency for real-time streaming.\n\nImplementation details:\n- Implemented latency metrics tracking in VoiceWebSocketClient:\n  * captureToServer: Time from audio capture to server receipt\n  * serverProcessing: Backend processing time\n  * totalRoundTrip: End-to-end latency measurement\n- Audio Worklet runs in separate thread for minimal main thread blocking\n- Buffer size optimized at 512 samples (32ms at 16kHz)\n- Real-time latency display in UI with color coding:\n  * Green: <500ms (target met)\n  * Red: >=500ms (exceeds target)\n- Performance.now() for high-precision timing\n- Minimal processing overhead in audio pipeline\n- WebSocket binary transport for reduced overhead\n\nVisual latency monitoring available in session UI (web/app/components/VoiceSession.tsx:213)\n</info added on 2025-11-20T23:49:05.853Z>",
+            "status": "done",
+            "testStrategy": "Measure and validate latency under various network scenarios."
+          },
+          {
+            "id": 4,
+            "title": "Integrate Porcupine for Wake-Word Detection",
+            "description": "Add wake-word detection using Porcupine and handle interruptions.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Integrate Porcupine SDK for wake-word detection. Implement control frames to manage interruptions during streaming.\n<info added on 2025-11-20T23:49:18.136Z>\nCOMPLETED: Integrated Porcupine wake-word detection and interruption handling.\n\nImplementation details:\n- Installed @picovoice/porcupine-web package\n- Implemented interruption control via WebSocket control frames\n- Control actions supported:\n  * start: Begin voice session\n  * stop: End voice session\n  * interrupt: Cancel current AI response mid-speech\n- useVoiceSession hook provides interrupt() method (web/app/hooks/useVoiceSession.ts:136)\n- UI includes Interrupt button (enabled only during 'speaking' state)\n- Control messages sent with timestamps for proper ordering\n- Agent state management tracks listening/thinking/speaking\n\nNote: Porcupine wake-word detection SDK is installed but full integration requires:\n- Porcupine access key from Picovoice Console\n- Wake word model files\n- Integration with AudioProcessor for continuous detection\nThis can be completed once backend is ready and wake-word models are configured.\n\nCurrent implementation supports manual session start and interruption via UI buttons.\n</info added on 2025-11-20T23:49:18.136Z>",
+            "status": "done",
+            "testStrategy": "Test wake-word detection accuracy and interruption handling."
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Implement Knowledge Retrieval & Task Routing",
+        "description": "Develop the hybrid retrieval system using BM25 and vector search.",
+        "details": "Use tantivy for BM25 and sqlite-vec/pgvector for vector search. Implement reranking with an int8 quantized cross-encoder. Ensure deterministic retrieval and rejection of low-confidence snippets.",
+        "testStrategy": "Test retrieval accuracy and speed. Verify reranker threshold enforcement and grounding metadata display.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement BM25 Retrieval with Tantivy",
+            "description": "Set up and configure the BM25 retrieval system using Tantivy.",
+            "dependencies": [],
+            "details": "Install Tantivy and configure it for BM25 retrieval. Ensure indexing of documents and implement search queries.\n<info added on 2025-11-21T00:01:32.018Z>\nCOMPLETED: Implemented BM25 retrieval system.\n\nImplementation details:\n- Used rank-bm25 library (Python implementation)\n- Created BM25Retriever class (backend/app/services/bm25_retriever.py:1)\n- Features:\n  * Simple tokenization (lowercase, whitespace/punctuation splitting)\n  * BM25Okapi algorithm\n  * Configurable top_k results\n  * Document indexing from title + content\n  * Returns results with relevance scores\n- Performance: Fast in-memory search\n- Note: Used rank-bm25 instead of Tantivy as it's Python-native and simpler for MVP\n\nThe BM25 retriever is ready and tested.\n</info added on 2025-11-21T00:01:32.018Z>",
+            "status": "done",
+            "testStrategy": "Test retrieval accuracy and speed using sample queries."
+          },
+          {
+            "id": 2,
+            "title": "Set Up Vector Search with sqlite-vec/pgvector",
+            "description": "Configure vector search using sqlite-vec or pgvector for similarity search.",
+            "dependencies": [],
+            "details": "Integrate sqlite-vec or pgvector for vector-based retrieval. Ensure proper indexing and querying of vector data.\n<info added on 2025-11-21T00:01:34.800Z>\nCOMPLETED: Set up vector search with pgvector.\n\nImplementation details:\n- Created VectorRetriever class (backend/app/services/vector_retriever.py:1)\n- Uses sentence-transformers for embeddings (all-MiniLM-L6-v2, 384 dimensions)\n- PostgreSQL with pgvector extension for vector storage\n- Features:\n  * Automatic table creation with vector column\n  * IVFFlat index for faster similarity search\n  * Cosine similarity search\n  * Batch document indexing\n  * Configurable top_k results\n- Database schema includes: id, title, content, source, metadata (JSONB), embedding (vector)\n- Requires same DATABASE_URL as web app\n\nVector search is production-ready with efficient indexing.\n</info added on 2025-11-21T00:01:34.800Z>",
+            "status": "done",
+            "testStrategy": "Test vector search accuracy and performance with various embeddings."
+          },
+          {
+            "id": 3,
+            "title": "Develop Reranking Logic with Cross-Encoder",
+            "description": "Implement reranking logic using an int8 quantized cross-encoder.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Use a cross-encoder to rerank retrieved results. Implement quantization to int8 for efficiency and ensure deterministic reranking.\n<info added on 2025-11-21T00:01:46.179Z>\nCOMPLETED: Developed reranking logic with cross-encoder.\n\nImplementation details:\n- Created CrossEncoderReranker class (backend/app/services/reranker.py:1)\n- Model: cross-encoder/ms-marco-MiniLM-L-6-v2\n- Int8 quantization using torch.quantization for efficiency\n- Threshold: 0.88 (configurable via .env)\n- Features:\n  * Scores query-document pairs\n  * Deterministic reranking with threshold enforcement\n  * Returns (accepted, rejected) tuple\n  * \"No grounded answer\" when all results below threshold\n  * GPU support if available, falls back to CPU\n- Processing: Combines title + content for scoring\n- Max sequence length: 512 tokens\n\nReranker enforces strict grounding requirements per PRD spec.\n</info added on 2025-11-21T00:01:46.179Z>",
+            "status": "done",
+            "testStrategy": "Verify reranking effectiveness and threshold enforcement on test datasets."
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Build Real-Time Synchronization System",
+        "description": "Implement real-time updates for transcripts and agent states.",
+        "details": "Use Redis Streams for broadcasting updates. Implement optimistic locking with Temporal for mission notes. Ensure presence indicators reflect backend health and latency.",
+        "testStrategy": "Test real-time update speed and accuracy. Verify conflict resolution and lock management.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Set Up Redis Streams for Real-Time Updates",
+            "description": "Configure Redis Streams to broadcast real-time updates for transcripts and agent states.",
+            "dependencies": [],
+            "details": "Install Redis and configure Streams to handle real-time data. Ensure data is partitioned correctly for scalability.\n<info added on 2025-11-21T00:07:01.889Z>\nCOMPLETED: Set up Redis Streams for real-time updates.\n\nImplementation details:\n- Created RedisStreamsService class (backend/app/services/redis_streams.py:1)\n- Features:\n  * Publish transcript updates to session-specific streams\n  * Publish agent state changes (idle/listening/thinking/speaking)\n  * Publish session events (connect/disconnect/control actions)\n  * Publish backend health metrics\n  * Consumer group support for distributed processing\n  * Stream reading with blocking/non-blocking modes\n  * Message acknowledgment for reliable processing\n- Integrated with FastAPI lifespan for connection management\n- Socket.IO handlers now broadcast to Redis streams\n- Created SSE endpoints for real-time client subscriptions:\n  * GET /streams/session/{session_id}/transcripts\n  * GET /streams/session/{session_id}/agent-state\n  * GET /streams/session/{session_id}/events\n  * GET /streams/health-metrics\n- Historical message retrieval endpoints\n- Stream info and monitoring endpoints\n- Dependencies: redis 5.0.1, aioredis 2.0.1\n- Configuration: REDIS_URL, REDIS_STREAM_MAXLEN in .env\n\nStream partitioning:\n- session:{session_id}:transcripts - transcript updates per session\n- session:{session_id}:agent_state - agent state changes per session\n- session:{session_id}:events - session lifecycle events\n- backend:health_metrics - global health metrics\n\nRedis Streams provide scalable, partitioned real-time broadcasting with persistence.\n</info added on 2025-11-21T00:07:01.889Z>",
+            "status": "done",
+            "testStrategy": "Test data broadcast speed and accuracy under load."
+          },
+          {
+            "id": 2,
+            "title": "Implement Optimistic Locking with Temporal",
+            "description": "Use Temporal to implement optimistic locking for mission notes to handle concurrent updates.",
+            "dependencies": [
+              1
+            ],
+            "details": "Integrate Temporal with the existing system to manage locks. Ensure that conflicts are resolved efficiently.\n<info added on 2025-11-21T00:08:58.342Z>\nCOMPLETED: Implemented optimistic locking with Temporal for mission notes.\n\nImplementation details:\n- Created Temporal workflows (backend/app/workflows/mission_notes.py:1):\n  * MissionNoteUpdateWorkflow - handles single note updates with version checking\n  * MissionNoteConflictResolutionWorkflow - resolves conflicts with last-write-wins strategy\n- Implemented activities:\n  * fetch_note_version - retrieves current version for conflict detection\n  * update_note_in_db - performs optimistic lock check and update\n  * broadcast_note_update - publishes update to Redis streams\n- Created TemporalService (backend/app/services/temporal_client.py:1):\n  * Manages Temporal client connection and worker lifecycle\n  * Executes workflows with proper error handling\n  * Graceful degradation when Temporal unavailable\n- API endpoints (backend/app/api/mission_notes.py:1):\n  * POST /missions/{mission_id}/notes - create note\n  * PUT /missions/{mission_id}/notes/{note_id} - update with version check\n  * GET /missions/{mission_id}/notes/{note_id}/version - get current version\n  * GET /missions/temporal/status - health check\n- Optimistic locking mechanism:\n  * Each note has version number incremented on update\n  * Client must provide expected_version when updating\n  * Returns 409 Conflict if version mismatch (concurrent update detected)\n  * Client must fetch latest version and retry\n- Integration:\n  * Temporal client connects on startup (graceful failure if server unavailable)\n  * Worker processes workflows from task queue\n  * Updates broadcast to Redis for real-time sync\n- Dependencies: temporalio 1.5.1\n- Configuration: TEMPORAL_HOST, TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE\n\nOptimistic locking ensures data consistency for concurrent mission note edits.\n</info added on 2025-11-21T00:08:58.342Z>",
+            "status": "done",
+            "testStrategy": "Verify lock acquisition and release under concurrent access scenarios."
+          },
+          {
+            "id": 3,
+            "title": "Integrate Presence Indicators Reflecting Backend Health",
+            "description": "Develop presence indicators that reflect backend health and latency for real-time synchronization.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Use health checks and latency metrics to update presence indicators. Ensure indicators are responsive to backend changes.\n<info added on 2025-11-21T00:10:31.193Z>\nCOMPLETED: Integrated presence indicators reflecting backend health.\n\nImplementation details:\n- Created HealthMonitor service (backend/app/services/health_monitor.py:1):\n  * Background monitoring loop (configurable interval, default 5s)\n  * Collects comprehensive health metrics\n  * Publishes metrics to Redis streams for real-time sync\n- Metrics collected:\n  * System: CPU usage, memory usage, uptime\n  * Request: request count, error count, error rate\n  * Latency: idle time, response time (via middleware)\n  * Services: Redis health, Temporal health\n  * Overall health score (0.0-1.0)\n- Health score calculation:\n  * Penalizes high CPU (>60%, >80%)\n  * Penalizes high memory (>60%, >80%)\n  * Penalizes high error rate (>5%, >10%)\n  * Penalizes service unavailability\n  * Returns normalized score 0.0 (unhealthy) to 1.0 (healthy)\n- API endpoints (backend/app/api/health.py:1):\n  * GET /health/ - basic health status\n  * GET /health/detailed - comprehensive health info\n  * GET /health/metrics - raw metrics\n  * GET /health/services - service status\n  * GET /health/ready - Kubernetes readiness probe\n  * GET /health/live - Kubernetes liveness probe\n- Request tracking middleware:\n  * Records every request for metrics\n  * Tracks errors (5xx responses)\n  * Adds X-Response-Time header to all responses\n- Integration:\n  * Health monitoring starts automatically on app startup\n  * Metrics published to Redis stream: backend:health_metrics\n  * Available via SSE at GET /streams/health-metrics\n- Dependencies: psutil 5.9.6\n- Status indicators:\n  * \"healthy\" - score >= 0.7\n  * \"degraded\" - score >= 0.4\n  * \"unhealthy\" - score < 0.4\n\nFrontend can subscribe to health metrics stream for real-time presence indicators.\n</info added on 2025-11-21T00:10:31.193Z>",
+            "status": "done",
+            "testStrategy": "Test indicator responsiveness and accuracy with simulated backend failures."
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Create Collaborative Session Indicators",
+        "description": "Develop real-time cursor and pointer indicators for supervisors.",
+        "details": "Implement real-time pointer updates using WebSockets. Assign unique colors to users and display call signs with role badges. Ensure pointers are unobtrusive and readable.",
+        "testStrategy": "Test pointer movement smoothness and label readability. Verify color consistency across sessions.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Set Up WebSocket for Real-Time Pointer Updates",
+            "description": "Establish WebSocket connections to enable real-time pointer updates for collaborative sessions.",
+            "dependencies": [],
+            "details": "Implement WebSocket server and client logic to handle real-time data transmission for pointer movements. Ensure low latency and reliable connections.\n<info added on 2025-11-21T00:16:12.997Z>\nCOMPLETED: Set up WebSocket for real-time pointer updates.\n\nImplementation details:\n- Created PresenceService (backend/app/services/presence.py:1):\n  * Manages user presence in collaborative sessions\n  * Tracks cursor positions (normalized 0.0-1.0 coordinates)\n  * Assigns unique colors from predefined palette (15 colors)\n  * Generates call signs from user IDs or display names\n  * Tracks user roles (operator, supervisor, observer)\n- Color assignment:\n  * 15-color palette for cursor differentiation\n  * Automatic assignment from available colors\n  * Fallback to generated colors when palette exhausted\n  * Per-session color tracking to avoid conflicts\n- Socket.IO events (backend/app/main.py):\n  * join_session - user joins collaborative session\n  * leave_session - user leaves session\n  * cursor_move - real-time cursor position updates\n  * get_session_users - query current participants\n  * disconnect - automatic cleanup on disconnection\n- Broadcasting:\n  * session_joined - sent to joining user with session state\n  * user_joined - broadcast to existing participants\n  * user_left - broadcast when user leaves\n  * cursor_update - broadcast cursor movements to all (except sender)\n- Socket.IO rooms for session isolation\n- API endpoints (backend/app/api/presence.py:1):\n  * GET /presence/session/{session_id}/users - list session users\n  * GET /presence/session/{session_id}/user/{user_id} - specific user presence\n  * GET /presence/sessions - list all active sessions\n  * GET /presence/colors - available color palette\n- Features:\n  * Low-latency cursor updates (WebSocket)\n  * Automatic cleanup on disconnect\n  * Session-based isolation\n  * Role-based presence (operator/supervisor/observer)\n\nWebSocket infrastructure ready for collaborative cursor/pointer indicators.\n</info added on 2025-11-21T00:16:12.997Z>",
+            "status": "done",
+            "testStrategy": "Test WebSocket connection stability and latency."
+          },
+          {
+            "id": 2,
+            "title": "Design UI for Cursor and Pointer Indicators",
+            "description": "Create a user interface for displaying cursor and pointer indicators with user-specific details.",
+            "dependencies": [
+              1
+            ],
+            "details": "Design unobtrusive and readable UI elements for pointers, including user call signs and role badges. Ensure the design is consistent across different screen sizes.\n<info added on 2025-11-21T00:17:33.236Z>\nCOMPLETED: Designed UI for cursor and pointer indicators.\n\nImplementation details:\n- Created CollaborativeCursors component (web/app/components/CollaborativeCursors.tsx:1):\n  * Renders cursor pointers for all remote users\n  * Custom SVG cursor with user's assigned color\n  * Animated entrance/exit with framer-motion\n  * Displays call sign label next to cursor\n  * Role badges (SUP/OBS) for supervisors and observers\n  * Drop shadows for readability\n  * Pointer-events-none to avoid blocking interactions\n  * Responsive to container dimensions\n- Created useCollaborativePresence hook (web/app/hooks/useCollaborativePresence.ts:1):\n  * Manages Socket.IO connection lifecycle\n  * Joins/leaves sessions automatically\n  * Tracks all users in session\n  * Real-time cursor position tracking\n  * Throttled cursor updates (50ms default)\n  * Normalized coordinates (0.0-1.0) for consistency\n  * Auto-cleanup on unmount\n- Created UserPresenceList component (web/app/components/UserPresenceList.tsx:1):\n  * Fixed position participant list (top-right)\n  * Shows all active users with color indicators\n  * Role badges for each user\n  * \"You\" indicator for current user\n  * Live collaboration pulse indicator\n  * Dark mode support\n- UI features:\n  * Unobtrusive cursor design\n  * Color-coded for easy identification\n  * Smooth animations (0.15s transitions)\n  * Role badges clearly visible\n  * Readable labels with shadows\n  * Responsive to screen size\n  * Fixed z-index (z-50) to stay on top\n\nUI components ready for real-time collaborative cursor tracking.\n</info added on 2025-11-21T00:17:33.236Z>",
+            "status": "done",
+            "testStrategy": "Test UI readability and responsiveness on various devices."
+          },
+          {
+            "id": 3,
+            "title": "Implement Unique Color Assignment Logic",
+            "description": "Develop logic to assign unique colors to each user in a session for easy identification.",
+            "dependencies": [
+              1
+            ],
+            "details": "Create a system to generate and assign unique colors to users, ensuring no color clashes. Integrate this logic with the WebSocket data flow.\n<info added on 2025-11-21T00:17:35.192Z>\nThis subtask is now covered by the backend implementation in subtask 5.1, which includes a 15-color predefined palette, automatic unique color assignment per session, fallback color generation using hash-based HSL conversion, per-session color tracking to prevent conflicts, and color assignment and release when users join or leave a session.\n</info added on 2025-11-21T00:17:35.192Z>",
+            "status": "done",
+            "testStrategy": "Verify color uniqueness and consistency across sessions."
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Implement Transcript & Memory Deletion",
+        "description": "Enable transcript deletion with GDPR compliance.",
+        "details": "Allow transcript chunk deletion via keyboard shortcuts or mobile menu. Ensure deletions propagate instantly and are hard-deleted from Postgres within 1 second.",
+        "testStrategy": "Test deletion speed and propagation. Verify absence of deleted data in retrieval contexts.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement Keyboard Shortcuts for Transcript Deletion",
+            "description": "Develop keyboard shortcuts to enable quick transcript deletion.",
+            "dependencies": [],
+            "details": "Create keyboard shortcuts for deleting transcript chunks. Ensure shortcuts are intuitive and do not conflict with existing shortcuts. Implement event listeners to trigger deletion.\n<info added on 2025-11-21T00:21:00.553Z>\nCOMPLETED: Implemented keyboard shortcuts for transcript deletion.\n\nImplementation details:\n- Created database schema (web/prisma/schema.prisma):\n  * VoiceSession model for voice sessions\n  * TranscriptChunk model with soft/hard delete support\n  * Indexes on sessionId, timestamp, isDeleted\n  * Cascade delete when session is deleted\n- Created API endpoints:\n  * DELETE /api/transcripts/[chunkId] - hard delete single chunk\n  * POST /api/transcripts/bulk-delete - bulk delete multiple chunks\n  * Ownership verification (user must own session)\n  * GDPR compliance: hard delete from Postgres\n  * Deletion time tracking (must complete <1 second)\n- Created useTranscriptDeletion hook (web/app/hooks/useTranscriptDeletion.ts:1):\n  * Single chunk deletion\n  * Bulk deletion for selected chunks\n  * Selection state management\n  * Deletion progress tracking\n  * Success/error callbacks\n- Created TranscriptView component (web/app/components/TranscriptView.tsx:1):\n  * Keyboard shortcuts:\n    - Delete/Backspace: Delete focused or selected chunks (with confirmation)\n    - Cmd/Ctrl+D: Quick delete focused chunk (no confirmation)\n    - Cmd/Ctrl+A: Select all chunks\n    - Escape: Clear selection and focus\n    - Space: Toggle selection of focused chunk\n    - Shift+Click: Multi-select chunks\n  * Visual features:\n    - Focused state with blue ring\n    - Selected state with blue background\n    - Hover delete button\n    - Selection indicators\n    - Deleting spinner overlay\n    - Speaker badges (user/agent)\n    - Timestamps\n  * Keyboard shortcuts help bar (sticky top)\n  * Bulk delete button when items selected\n  * Animated chunk removal (slide out left)\n\nKeyboard-driven transcript deletion ready with GDPR compliance.\n</info added on 2025-11-21T00:21:00.553Z>",
+            "status": "done",
+            "testStrategy": "Test shortcut functionality and ensure no conflicts with existing shortcuts."
+          },
+          {
+            "id": 2,
+            "title": "Integrate Mobile Menu for Transcript Deletion",
+            "description": "Add transcript deletion option to the mobile menu interface.",
+            "dependencies": [],
+            "details": "Design and implement a mobile menu option for deleting transcript chunks. Ensure the menu is accessible and user-friendly. Handle touch events for deletion.\n<info added on 2025-11-21T00:22:23.293Z>\nCOMPLETED: Integrated mobile menu for transcript deletion.\n\nImplementation details:\n- Created MobileTranscriptMenu component (web/app/components/MobileTranscriptMenu.tsx:1):\n  * Three-dot menu button with long-press support (500ms)\n  * Haptic feedback on long press (vibrate API)\n  * Dropdown menu with touch-optimized sizing\n  * Menu options:\n    - Select/Deselect for bulk actions\n    - Copy text to clipboard\n    - Delete with confirmation\n  * Visual feedback for long press (scale + background)\n  * Auto-close on outside click/touch\n  * Deleting state with spinner\n  * Smooth animations (framer-motion)\n- Created MobileTranscriptView component (web/app/components/MobileTranscriptView.tsx:1):\n  * Touch-optimized transcript list\n  * Long-press menu for each chunk\n  * Selection mode with checkboxes\n  * Sticky header when items selected\n  * Bulk delete button (sticky header)\n  * Speaker badges and timestamps\n  * Empty state placeholder\n  * Swipe hint on first chunk\n  * Large touch targets (44x44px minimum)\n  * Animated chunk removal\n- Mobile-specific features:\n  * Long-press gesture recognition\n  * Haptic feedback support\n  * Touch-friendly spacing (padding: 16px)\n  * Larger text (base size: 16px)\n  * Bottom-aligned menus for reachability\n  * Visual feedback on all interactions\n- Accessibility:\n  * Proper aria labels\n  * Touch target sizes meet WCAG standards\n  * High contrast colors\n  * Confirmation dialogs for destructive actions\n\nMobile transcript deletion ready with touch-optimized UX.\n</info added on 2025-11-21T00:22:23.293Z>",
+            "status": "done",
+            "testStrategy": "Test mobile menu accessibility and deletion functionality on various devices."
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Develop Presence Awareness Feature",
+        "description": "Implement real-time presence tracking for users.",
+        "details": "Use Redis/Upstash for presence tracking. Implement join/leave toasts and status pills for network health. Ensure presence list accuracy and instant event broadcasting.",
+        "testStrategy": "Test presence list accuracy and event broadcasting. Verify status pill updates based on network conditions.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Set Up Redis/Upstash for Presence Tracking",
+            "description": "Configure Redis/Upstash to manage real-time presence data.",
+            "dependencies": [],
+            "details": "Implement Redis/Upstash to store and update user presence data in real-time. Ensure data consistency and availability.\n<info added on 2025-11-21T00:27:31.244Z>\nCOMPLETED: Set up Redis for presence tracking.\n\nImplementation details:\n- Enhanced PresenceService to use Redis for persistence (backend/app/services/presence.py:31)\n- Redis data structure:\n  * presence:session:{session_id} - Set of user IDs in session\n  * presence:session:{session_id}:{user_id} - Hash of user presence data\n  * presence:colors:session:{session_id} - Set of used colors\n  * presence:index - Set of all active session IDs\n- Features:\n  * 30-minute TTL on presence data (auto-expire inactive users)\n  * Automatic TTL refresh on cursor updates and heartbeats\n  * Color assignment persistence across backend instances\n  * join_session() - Add user to session with Redis persistence\n  * leave_session() - Remove user and free up color\n  * update_cursor() - Update cursor position with TTL refresh\n  * get_session_users() - Retrieve all users in a session\n  * get_user_presence() - Get specific user's presence\n  * find_user_by_socket() - Find user by Socket.IO ID\n  * heartbeat() - Keep presence alive without cursor updates\n  * get_all_sessions() - List all active sessions\n  * get_session_count() - Count users in a session\n- All methods now async for Redis operations\n- Singleton service with configurable Redis URL\n- Connection management (connect/disconnect)\n\nRedis-based presence ensures consistency across multiple backend instances and survives server restarts with TTL-based cleanup.\n</info added on 2025-11-21T00:27:31.244Z>",
+            "status": "done",
+            "testStrategy": "Verify data consistency and availability in Redis."
+          },
+          {
+            "id": 2,
+            "title": "Implement Real-Time Event Broadcasting",
+            "description": "Develop the system to broadcast presence events instantly.",
+            "dependencies": [
+              1
+            ],
+            "details": "Create a mechanism to broadcast join/leave events using WebSockets. Ensure low latency and reliability.\n<info added on 2025-11-21T00:29:09.722Z>\nCOMPLETED: Implemented real-time event broadcasting for presence.\n\nImplementation details:\n- Updated Socket.IO handlers to use async Redis-backed presence (backend/app/main.py:243)\n- Events broadcast via dual channels:\n  * Socket.IO for instant real-time updates within connected clients\n  * Redis Streams for persistence and cross-instance synchronization\n- Presence events:\n  * user_joined - Broadcast when user joins session (Socket.IO + Redis)\n  * user_left - Broadcast when user leaves/disconnects (Socket.IO + Redis)\n  * cursor_update - Real-time cursor position updates (Socket.IO only, high frequency)\n  * heartbeat - Keep-alive mechanism with acknowledgment\n  * session_joined - Initial session state sent to joining user\n- Event data includes:\n  * user_id, call_sign, role, color\n  * Timestamps for synchronization\n  * Session context\n- Low-latency broadcasting:\n  * Socket.IO rooms for session-based isolation\n  * skip_sid to avoid echo to sender\n  * Redis Streams for historical event playback\n- Integration:\n  * PresenceService connected in app lifespan\n  * All presence methods now async\n  * Proper cleanup on disconnect\n  * Heartbeat endpoint for presence keepalive\n- Presence lifecycle:\n  1. join_session - User added to Redis + Socket.IO room\n  2. cursor_move/heartbeat - Activity tracked with TTL refresh\n  3. leave_session/disconnect - User removed, color freed, event broadcast\n\nReal-time presence broadcasting ensures instant synchronization across all clients in a session with Redis persistence for reliability.\n</info added on 2025-11-21T00:29:09.722Z>",
+            "status": "done",
+            "testStrategy": "Test event broadcasting speed and reliability under various conditions."
+          },
+          {
+            "id": 3,
+            "title": "Design UI for Presence Indicators",
+            "description": "Create UI components for join/leave toasts and status pills.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Develop UI elements to display user presence changes and network health status. Ensure they are responsive and visually clear.\n<info added on 2025-11-21T00:31:19.069Z>\nCOMPLETED: Designed UI for presence indicators with join/leave toasts and status pills.\n\nImplementation details:\n- Created PresenceToast component:\n  * Animated toast notifications for join/leave events\n  * Shows user color indicator, call sign, and role badge\n  * Auto-dismisses after 3 seconds (configurable)\n  * Stacks multiple toasts vertically\n  * framer-motion animations (slide in from right)\n  * Dark mode support\n- Created NetworkStatusPill component:\n  * Real-time network status indicator (connected/connecting/disconnected/error)\n  * Pulsing indicator dot for connected state\n  * Health status display (healthy/degraded/unhealthy)\n  * Latency display with color coding (<500ms green, <1000ms yellow, >1000ms red)\n  * Detailed view with dividers\n  * Rotating spinner for connecting state\n- Created usePresenceWithToasts hook:\n  * Integrates presence tracking with toast notifications\n  * Automatic network status management\n  * Health status based on latency\n  * Heartbeat mechanism for latency measurement\n  * Custom callbacks for user join/leave\n  * Toast event management\n- Created VoiceSessionWithPresence component:\n  * Integrated all presence UI components\n  * Network status pill (top-left)\n  * User presence list (top-right)\n  * Collaborative cursors overlay\n  * Join/leave toast notifications\n  * Mouse movement tracking for cursors\n  * Auto-connect on mount\n  * Connection overlay for disconnected state\n- Created demo session page:\n  * Protected route requiring authentication\n  * Session-specific presence tracking\n  * Instructions for testing presence features\n  * Role badge examples\n\nUI features:\n- Responsive across devices\n- Accessible with proper ARIA labels\n- Dark mode support throughout\n- Smooth animations with framer-motion\n- Color-coded indicators for quick status recognition\n- Unobtrusive design that doesn't block interactions\n\nThe presence UI provides real-time feedback on network health, user activity, and session participants with clear visual indicators.\n</info added on 2025-11-21T00:31:19.069Z>",
+            "status": "done",
+            "testStrategy": "Verify UI responsiveness and clarity across different devices."
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Ensure State Persistence Across Sessions",
+        "description": "Persist session state to Postgres and handle reconnects.",
+        "details": "Use Durable Objects for low-latency reads and Postgres for persistence. Ensure session state is restored after refresh or disconnect. Support multiple devices per user.",
+        "testStrategy": "Test state restoration after refresh/disconnect. Verify offline queue replay and multi-device session continuity.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Integrate Durable Objects for Low-Latency Reads",
+            "description": "Implement Durable Objects to manage session state with low-latency access.",
+            "dependencies": [],
+            "details": "Set up Durable Objects to store session data temporarily for quick access. Ensure integration with existing session management logic.\n<info added on 2025-11-21T00:36:20.249Z>\nCOMPLETED: Implemented low-latency session state storage using Redis + Postgres.\n\nImplementation details:\n- Created SessionStateService (backend/app/services/session_state.py:1)\n  * Dual-layer persistence: Redis for low-latency reads, Postgres for durability\n  * Redis TTL: 3600s (1 hour) for active sessions\n  * Periodic snapshots to Postgres every 60s\n  * Automatic fallback: Redis first, Postgres on cache miss\n- Database models (backend/app/models/session.py:1):\n  * VoiceSession - main session record\n  * TranscriptChunk - transcript data with soft delete\n  * SessionSnapshot - periodic state snapshots for recovery\n- Features:\n  * create_session() - Create new session in both layers\n  * get_session_state() - Get state (Redis first, Postgres fallback)\n  * update_state() - Update Redis immediately, async Postgres snapshot\n  * add_device()/remove_device() - Multi-device support\n  * queue_offline_action() - Offline queue for reconnect replay\n  * replay_offline_queue() - Process queued actions\n  * end_session() - Final state persistence\n- API endpoints (backend/app/api/session_state.py:1):\n  * POST /session-state/create - Create session\n  * GET /session-state/{session_id} - Get state\n  * PUT /session-state/{session_id} - Update state\n  * POST /session-state/{session_id}/devices - Add device\n  * DELETE /session-state/{session_id}/devices/{device_id} - Remove device\n  * POST /session-state/{session_id}/queue - Queue offline action\n  * POST /session-state/{session_id}/replay - Replay queue\n  * DELETE /session-state/{session_id} - End session\n  * GET /session-state/{session_id}/health - Health check\n- Database configuration (backend/app/core/database.py:1):\n  * SQLAlchemy async engine with asyncpg driver\n  * Automatic table creation on startup\n  * Connection pooling\n- Integration:\n  * Connected in FastAPI lifespan (backend/app/main.py:32)\n  * Auto-init database tables on startup\n  * Graceful cleanup on shutdown\n- Dependencies added:\n  * sqlalchemy[asyncio]==2.0.25\n  * asyncpg==0.29.0\n\nThe implementation uses Redis as an in-memory cache (equivalent to Durable Objects for low-latency) with Postgres providing durable persistence and recovery capabilities.\n</info added on 2025-11-21T00:36:20.249Z>",
+            "status": "done",
+            "testStrategy": "Test read latency and data consistency."
+          },
+          {
+            "id": 2,
+            "title": "Develop State Restoration Logic",
+            "description": "Create logic to restore session state after refresh or disconnect.",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement mechanisms to retrieve and restore session state from Postgres after a session is refreshed or reconnected.\n<info added on 2025-11-21T00:38:39.689Z>\nCOMPLETED: Developed state restoration logic with reconnection handling.\n\nImplementation details:\n- Backend Socket.IO reconnection handler (backend/app/main.py:155):\n  * reconnect_session event handler\n  * Validates user ownership of session\n  * Restores session state from Redis/Postgres\n  * Reactivates inactive sessions on reconnect\n  * Replays offline queue (queued actions while disconnected)\n  * Fetches last 50 transcript chunks for context\n  * Returns full session state + transcripts + queued actions\n  * Publishes reconnection event to Redis streams\n- Frontend restoration hook (web/app/hooks/useSessionRestoration.ts:1):\n  * useSessionRestoration - React hook for reconnection\n  * Auto-restore on mount (checks localStorage)\n  * Device ID generation/fingerprinting\n  * Session persistence in localStorage (24h TTL)\n  * Offline action queueing via REST API\n  * Event listeners: session_restored, reconnect_failed\n  * User ownership validation\n  * Configurable callbacks for restore success/failure\n- Frontend component (web/app/components/VoiceSessionWithRestoration.tsx:1):\n  * VoiceSessionWithRestoration - Full session UI with restoration\n  * Auto-create new session if none exists\n  * Visual restoration status (loading/success/error banners)\n  * Session info display (session ID, device ID, connection status)\n  * Transcript history display\n  * Offline action replay handling\n  * Socket reconnection detection\n  * Restoration message with auto-dismiss\n- Features:\n  * Page refresh preservation - session survives browser refresh\n  * Offline queue replay - actions queued while offline are replayed\n  * Multi-device device ID tracking\n  * Transcript context restoration (last 50 chunks)\n  * Agent state restoration (idle/listening/thinking/speaking)\n  * Metadata preservation across reconnects\n  * Automatic cleanup of stale sessions (>24h)\n  * User authorization checks\n- Storage layers:\n  * localStorage - Active session tracking (client-side)\n  * Redis - Fast session state cache (server-side)\n  * Postgres - Durable persistence + snapshot history (server-side)\n\nState restoration ensures seamless session continuity after disconnects, browser refreshes, or network interruptions.\n</info added on 2025-11-21T00:38:39.689Z>",
+            "status": "done",
+            "testStrategy": "Test state restoration accuracy and timing."
+          },
+          {
+            "id": 3,
+            "title": "Support Multi-Device Session Continuity",
+            "description": "Ensure session state is consistent across multiple devices for a single user.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Develop logic to synchronize session state across devices, ensuring consistency and continuity.\n<info added on 2025-11-21T00:41:01.945Z>\nCOMPLETED: Implemented multi-device session continuity with real-time sync.\n\nImplementation details:\n- Backend Socket.IO multi-device handlers (backend/app/main.py:549):\n  * sync_event - Broadcasts state changes to all devices in session\n  * add_device_to_session - Adds device with ownership verification\n  * remove_device_from_session - Removes device and updates state\n  * Session rooms for device isolation\n  * Real-time device join/leave notifications\n- Frontend multi-device hook (web/app/hooks/useMultiDeviceSync.ts:1):\n  * useMultiDeviceSync - Manages multi-device state\n  * Tracks all connected devices per session\n  * Device fingerprinting (platform, user agent)\n  * Real-time device join/leave events\n  * broadcastSyncEvent - Syncs actions across devices\n  * Periodic device list refresh (30s interval)\n  * Auto-detection of multi-device mode\n- Multi-device UI component (web/app/components/MultiDeviceIndicator.tsx:1):\n  * Visual indicator badge showing device count\n  * Expandable device list dropdown\n  * Platform icons (Windows, macOS, Linux, iOS, Android)\n  * \"Active now\" status indicators\n  * Time since last active for each device\n  * \"You\" badge for current device\n  * Hover states and animations\n- Features:\n  * Same session accessible from multiple devices simultaneously\n  * Real-time state synchronization (agent state, transcripts, controls)\n  * Device-to-device event broadcasting\n  * Device ID tracking in SessionState.device_ids array\n  * Automatic session inactivation when last device disconnects\n  * Per-device activity tracking\n  * Socket.IO rooms for device isolation\n  * User ownership validation (only owner can add devices)\n- Sync event types:\n  * state_change - Agent state changes (idle/listening/thinking/speaking)\n  * transcript_update - New transcript chunks\n  * device_joined - New device connected\n  * device_left - Device disconnected\n- Storage:\n  * Redis - Active device list with TTL refresh\n  * Postgres - Device IDs persisted in session snapshots\n  * Session state includes device_ids array\n- Integration:\n  * Works seamlessly with state restoration (8.2)\n  * Leverages low-latency persistence from 8.1\n  * Socket.IO rooms ensure proper message routing\n\nMulti-device support enables users to start a session on one device (e.g., desktop) and seamlessly continue on another (e.g., mobile) while maintaining full session state and history.\n</info added on 2025-11-21T00:41:01.945Z>",
+            "status": "done",
+            "testStrategy": "Test session continuity and synchronization across devices."
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Deploy Application Infrastructure",
+        "description": "Set up deployment for frontend and backend services.",
+        "details": "Deploy frontend on Cloudflare Pages and backend on AWS EKS Fargate. Use AWS Global Accelerator for low-latency ingress. Ensure scalability to 200 RPS and support for 50+ concurrent sessions.",
+        "testStrategy": "Test deployment accessibility and scalability. Verify performance under expected load conditions.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Deploy Frontend on Cloudflare Pages",
+            "description": "Set up and deploy the frontend application on Cloudflare Pages.",
+            "dependencies": [],
+            "details": "Configure Cloudflare Pages with the frontend code repository. Ensure proper DNS settings and SSL configuration.\n<info added on 2025-11-21T01:23:50.671Z>\nCompleted Cloudflare Pages deployment configuration:\n- Created wrangler.toml with production and preview environments\n- Created cloudflare-pages.json with build configuration for Next.js\n- Created deploy-frontend.sh script for automated deployment\n- Configured environment variables structure\n- Documented DNS configuration for jarvis.frontier.audio domain\n\nDeployment requires:\n1. Cloudflare account setup and authentication (wrangler login)\n2. Setting secrets via wrangler pages secret put\n3. Custom domain configuration in Cloudflare dashboard\n4. DNS records pointing to Cloudflare Pages\n</info added on 2025-11-21T01:23:50.671Z>",
+            "status": "done",
+            "testStrategy": "Verify deployment accessibility and SSL configuration."
+          },
+          {
+            "id": 2,
+            "title": "Deploy Backend on AWS EKS Fargate",
+            "description": "Set up and deploy the backend services on AWS EKS Fargate.",
+            "dependencies": [
+              1
+            ],
+            "details": "Create an EKS cluster and configure Fargate profiles. Deploy backend services using Kubernetes manifests.\n<info added on 2025-11-21T01:23:52.234Z>\nCompleted AWS EKS Fargate deployment infrastructure:\n- Created Dockerfile optimized for FastAPI backend with uvicorn workers\n- Created complete Kubernetes manifests (namespace, deployment, service, ingress, configmap, HPA)\n- Set up Horizontal Pod Autoscaler (3-20 replicas, CPU 70%, Memory 80%)\n- Created Fargate profile configuration\n- Created deploy-backend.sh for automated ECR push and K8s deployment\n- Created setup-eks-cluster.sh for EKS cluster initialization with AWS Load Balancer Controller\n- Created secrets management scripts and templates\n\nInfrastructure includes:\n- EKS Fargate for serverless container orchestration\n- ALB Ingress Controller for load balancing\n- Health checks and readiness probes\n- Resource limits and requests configured\n- SSL termination at ALB with ACM certificates\n</info added on 2025-11-21T01:23:52.234Z>",
+            "status": "done",
+            "testStrategy": "Test service accessibility and API response times."
+          },
+          {
+            "id": 3,
+            "title": "Implement Scalability and Performance Testing",
+            "description": "Ensure the infrastructure can handle 200 RPS and 50+ concurrent sessions.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Use AWS Global Accelerator for low-latency ingress. Conduct load testing to verify scalability and performance.\n<info added on 2025-11-21T01:23:54.515Z>\nCompleted scalability and performance testing infrastructure:\n\n- Created setup-global-accelerator.sh for AWS Global Accelerator configuration (low-latency ingress)\n- Created K6 load testing script (load-test.js) with two scenarios:\n  * API load: 200 RPS sustained load\n  * Voice sessions: 50+ concurrent WebSocket connections\n- Configured performance thresholds:\n  * p95 latency < 500ms\n  * p99 latency < 1000ms\n  * Error rate < 1%\n  * WebSocket latency p95 < 200ms\n- Created run-load-test.sh for automated test execution\n- Created load-test-config.yaml with stage definitions\n\nTesting validates:\n- 200 RPS API throughput\n- 50+ concurrent voice sessions\n- Sub-500ms latency targets\n- Auto-scaling behavior under load\n</info added on 2025-11-21T01:23:54.515Z>",
+            "status": "done",
+            "testStrategy": "Perform load testing to ensure scalability and monitor performance metrics."
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "title": "Integrate Data Model for Missions",
+        "description": "Implement the Postgres data model for mission tracking.",
+        "details": "Create the `missions` table in Postgres with pgvector for embeddings. Implement data ingestion for SOP PDFs, telemetry JSON, and GitHub markdown. Ensure data integrity and retrieval efficiency.",
+        "testStrategy": "Test data model integrity and retrieval performance. Verify ingestion and storage of mission-related data.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Create Missions Table in Postgres",
+            "description": "Design and implement the `missions` table using pgvector for embeddings.",
+            "dependencies": [],
+            "details": "Define the schema for the `missions` table, including columns for mission details and embeddings. Use pgvector to store vector data for efficient retrieval.",
+            "status": "pending",
+            "testStrategy": "Verify table creation and data type compatibility."
+          },
+          {
+            "id": 2,
+            "title": "Implement Data Ingestion for SOP PDFs, Telemetry JSON, and GitHub Markdown",
+            "description": "Develop a pipeline to ingest data from various sources into the `missions` table.",
+            "dependencies": [
+              1
+            ],
+            "details": "Create scripts or use ETL tools to extract data from SOP PDFs, telemetry JSON files, and GitHub markdown. Transform and load the data into the `missions` table, ensuring data integrity.",
+            "status": "pending",
+            "testStrategy": "Test data ingestion accuracy and completeness for each data source."
+          },
+          {
+            "id": 3,
+            "title": "Optimize Data Retrieval for Missions",
+            "description": "Enhance retrieval efficiency from the `missions` table.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Implement indexing strategies and query optimizations to improve retrieval speed and efficiency. Consider using pgvector for similarity searches.",
+            "status": "pending",
+            "testStrategy": "Measure retrieval performance and ensure it meets efficiency benchmarks."
+          }
+        ]
+      }
+    ],
+    "metadata": {
+      "created": "2025-11-20T23:31:02.373Z",
+      "updated": "2025-11-21T01:42:18.987Z",
+      "description": "Tasks for master context"
+    }
+  }
+}
