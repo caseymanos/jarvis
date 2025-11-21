@@ -1,0 +1,25 @@
+{
+  "name": "jarvis-frontend",
+  "production_branch": "main",
+  "build_config": {
+    "build_command": "npm run build",
+    "output_directory": ".next",
+    "root_directory": "web",
+    "build_caching": true,
+    "node_version": "20"
+  },
+  "deployment_configs": {
+    "production": {
+      "environment_variables": {
+        "NODE_ENV": "production",
+        "NEXTAUTH_URL": "https://jarvis.frontier.audio",
+        "DATABASE_URL": "postgresql://user:pass@host:5432/jarvis"
+      }
+    },
+    "preview": {
+      "environment_variables": {
+        "NODE_ENV": "preview"
+      }
+    }
+  }
+}
